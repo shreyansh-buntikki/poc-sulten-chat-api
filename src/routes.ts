@@ -1,0 +1,18 @@
+import { Router } from "express";
+import { UserController } from "./controller.ts/user.controller";
+
+const mainRouter = Router();
+
+mainRouter.get("/user/search", UserController.search);
+
+mainRouter.get("/generate/vector", UserController.generateVector);
+
+mainRouter.post("/user/:username/chat", UserController.chat);
+
+mainRouter.get("/user/:username", UserController.getUserResponse);
+
+mainRouter.post("/user/:username/generate-embeddings", UserController.generateEmbeddings);
+
+// mainRouter.post("/user/:username/ollama/generate-embeddings", UserController.generateEmbeddingsOllama);
+
+export default mainRouter;

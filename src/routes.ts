@@ -11,8 +11,22 @@ mainRouter.post("/user/:username/chat", UserController.chat);
 
 mainRouter.get("/user/:username", UserController.getUserResponse);
 
-mainRouter.post("/user/:username/generate-embeddings", UserController.generateEmbeddings);
+mainRouter.post(
+  "/user/:username/generate-embeddings",
+  UserController.generateEmbeddings
+);
 
-// mainRouter.post("/user/:username/ollama/generate-embeddings", UserController.generateEmbeddingsOllama);
+// Ollama (local) endpoints
+mainRouter.post(
+  "/ollama/:username/generate-embeddings",
+  UserController.generateEmbeddingsOllama
+);
+
+mainRouter.post("/ollama/:username/chat", UserController.chatOllama);
+
+mainRouter.post(
+  "/user/:username/ollama/generate-embeddings",
+  UserController.generateEmbeddingsOllama
+);
 
 export default mainRouter;

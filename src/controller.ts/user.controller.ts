@@ -433,92 +433,84 @@ ORDER BY r.id
       }
       const userUid = user[0].uid;
 
-      const recipes = await AppDataSource.query(
-        `
-        SELECT DISTINCT 
-          r.id, 
-          r.name AS recipe_name, 
-          r.ingress, 
-          r.difficulty, 
-          r.servings, 
-          r."prepTime", 
-          r."cookTime",
-          r.embedding,
-          CASE 
-            WHEN r."userUid" = $1 THEN 'owned'
-            ELSE 'liked'
-          END as recipe_type
-        FROM recipe r
-        WHERE (
-          r."userUid" = $1
-          OR EXISTS (
-            SELECT 1
-            FROM "like" lk
-            WHERE lk."userUid" = $1
-              AND lk."entityType" = 'recipe'
-              AND lk."entityId" = r.id::text
-          )
-        )
-        AND r.status = 'published'
-        AND r."deletedAt" IS NULL
-        ORDER BY r.id
-        `,
-        [userUid]
-      );
-
+      // Generate question embedding once
       const questionEmbedding = await ollama.embed(message);
-
       if (!questionEmbedding || questionEmbedding.length === 0) {
         throw new Error("Failed to generate question embedding");
       }
 
-      const recipesWithSimilarity = recipes
-        .filter((r: any) => r.embedding !== null)
-        .map((recipe: any) => {
-          let recipeEmbedding;
-          try {
-            recipeEmbedding =
-              typeof recipe.embedding === "string"
-                ? JSON.parse(recipe.embedding)
-                : recipe.embedding;
-          } catch (error) {
-            console.error(
-              `Failed to parse embedding for recipe ${recipe.recipe_name}:`,
-              error
-            );
-            return null;
-          }
+      // Build pgvector literal and dessert cue flag
+      const vectorLiteral = `[${questionEmbedding.join(",")}]`;
+      const hasDessertCue = /cake|dessert|sweet/i.test(message);
 
-          const similarity = UserController.cosineSimilarity(
-            questionEmbedding,
-            recipeEmbedding
-          );
-          const distance = 1 - similarity;
-
-          return {
-            id: recipe.id,
-            name: recipe.recipe_name,
-            ingress: recipe.ingress,
-            difficulty: recipe.difficulty,
-            servings: recipe.servings,
-            prepTime: recipe.prepTime,
-            cookTime: recipe.cookTime,
-            recipe_type: recipe.recipe_type,
-            similarity,
-            distance,
-          };
-        })
-        .filter((r: any) => r !== null);
-
-      const similarRecipes = recipesWithSimilarity
-        .sort((a: any, b: any) => b.similarity - a.similarity)
-        .slice(0, 5);
+      // Single SQL with similarity and boosts; robust liked detection via polymorphic like table
+      const similarRecipes = await AppDataSource.query(
+        `
+        SELECT
+          r.id,
+          r.name AS recipe_name,
+          r.ingress,
+          r.difficulty,
+          r.servings,
+          r."prepTime",
+          r."cookTime",
+          CASE WHEN r."userUid" = $2 THEN 'owned' ELSE 'liked' END AS recipe_type,
+          1 - (r.embedding <=> $1::vector) AS similarity,
+          (
+            CASE WHEN r."userUid" = $2 THEN 0.10 ELSE 0 END
+            + CASE WHEN EXISTS (
+                SELECT 1 FROM "like" lk
+                WHERE lk."userUid" = $2
+                  AND lower(trim(lk."entityType")) = 'recipe'
+                  AND trim(lk."entityId") = r.id::text
+              ) THEN 0.15 ELSE 0 END
+            + CASE WHEN $3 AND (
+                r.name ILIKE '%cake%'
+                OR r.ingress ILIKE '%cake%'
+                OR r.ingress ILIKE '%sweet%'
+                OR r.name ILIKE '%dessert%'
+              ) THEN 0.05 ELSE 0 END
+          ) AS boost,
+          (
+            1 - (r.embedding <=> $1::vector)
+            + CASE WHEN r."userUid" = $2 THEN 0.10 ELSE 0 END
+            + CASE WHEN EXISTS (
+                SELECT 1 FROM "like" lk
+                WHERE lk."userUid" = $2
+                  AND lower(trim(lk."entityType")) = 'recipe'
+                  AND trim(lk."entityId") = r.id::text
+              ) THEN 0.15 ELSE 0 END
+            + CASE WHEN $3 AND (
+                r.name ILIKE '%cake%'
+                OR r.ingress ILIKE '%cake%'
+                OR r.ingress ILIKE '%sweet%'
+                OR r.name ILIKE '%dessert%'
+              ) THEN 0.05 ELSE 0 END
+          ) AS score
+        FROM recipe r
+        WHERE r.embedding IS NOT NULL
+          AND r.status = 'published'
+          AND r."deletedAt" IS NULL
+          AND (
+            r."userUid" = $2
+            OR EXISTS (
+              SELECT 1 FROM "like" lk
+              WHERE lk."userUid" = $2
+                AND lower(trim(lk."entityType")) = 'recipe'
+                AND trim(lk."entityId") = r.id::text
+            )
+          )
+        ORDER BY score DESC
+        LIMIT 8
+        `,
+        [vectorLiteral, userUid, hasDessertCue]
+      );
 
       similarRecipes.forEach((r: any, idx: number) => {
         console.log(
           `${idx + 1}. ${r.name} (${r.recipe_type}) - Similarity: ${(
             r.similarity * 100
-          ).toFixed(1)}%`
+          )?.toFixed(1)}%`
         );
       });
 
@@ -558,11 +550,11 @@ ORDER BY r.id
       if (similarRecipes.length > 0) {
         similarRecipes.forEach((r: any, idx: number) => {
           const total = (r.prepTime || 0) + (r.cookTime || 0);
-          const similarityPercent = (r.similarity * 100).toFixed(0);
+          const similarityPercent = (r.similarity * 100)?.toFixed(0);
           const typeLabel =
             r.recipe_type === "owned" ? "(Your Recipe)" : "(Liked)";
           context += `${idx + 1}. **${
-            r.name
+            r.recipe_name
           }** ${typeLabel} (${similarityPercent}% match)\n`;
           context += `   ${r.ingress || "No description"}\n`;
           context += `   ${r.difficulty} difficulty | Serves ${
@@ -585,52 +577,18 @@ ORDER BY r.id
         { role: "user", content: message },
       ]);
 
-      const recipesWithEmbeddings = recipes.filter(
-        (r: any) => r.embedding !== null
-      );
-      const recipesWithoutEmbeddings = recipes.filter(
-        (r: any) => r.embedding === null
-      );
-      const ownedRecipes = recipesWithSimilarity.filter(
-        (r: any) => r.recipe_type === "owned"
-      );
-      const likedRecipes = recipesWithSimilarity.filter(
-        (r: any) => r.recipe_type === "liked"
-      );
-
       return res.status(200).json({
         response: reply,
         debug: {
           question: message,
           embeddingGenerated: true,
-          calculationMethod: "TypeScript Cosine Similarity",
-
-          totalRecipes: recipes.length,
-          ownedRecipes: ownedRecipes.length,
-          likedRecipes: likedRecipes.length,
-          recipesWithEmbeddings: recipesWithEmbeddings.length,
-          recipesWithoutEmbeddings: recipesWithoutEmbeddings.length,
+          calculationMethod: "SQL pgvector similarity + boosts",
 
           relevantRecipesFound: similarRecipes.length,
           topRelevantRecipes: similarRecipes.map((r: any) => ({
-            name: r.name,
-            type: r.recipe_type,
-            similarity: `${(r.similarity * 100).toFixed(1)}%`,
-            distance: r.distance.toFixed(4),
-          })),
-
-          allRecipesSimilarities: recipesWithSimilarity
-            .sort((a: any, b: any) => b.similarity - a.similarity)
-            .map((r: any) => ({
-              name: r.name,
-              type: r.recipe_type,
-              similarity: `${(r.similarity * 100).toFixed(1)}%`,
-              distance: r.distance.toFixed(4),
-            })),
-
-          recipesNeedingEmbeddings: recipesWithoutEmbeddings.map((r: any) => ({
             name: r.recipe_name,
-            id: r.id,
+            type: r.recipe_type,
+            similarity: `${(r.similarity * 100)?.toFixed(1)}%`,
           })),
         },
       });

@@ -17,7 +17,7 @@ export class UserController {
 
       const userRepository = AppDataSource.getRepository(User);
       const data = await userRepository
-        .findOne({
+        .find({
           where: {
             username: Like(`%${user}%`),
           },
@@ -30,8 +30,7 @@ export class UserController {
       }
       res.status(200).json({
         message: "User searched successfully",
-        username: data.username,
-        userId: data.uid,
+        users: data,
       });
     } catch (error) {
       res.status(500).json({
@@ -329,7 +328,6 @@ ORDER BY r.id
           `,
         [userUid]
       );
-      // recipes = [...recipes, ...likedRecipes];
 
       let processed = 0;
       let errors = 0;
@@ -426,7 +424,6 @@ ORDER BY r.id
       const { message } = req.body;
       const ollama = new OllamaService();
 
-      // 1. Find user
       const user = await AppDataSource.query(
         `SELECT uid FROM "user" WHERE username = $1`,
         [username]
@@ -436,7 +433,6 @@ ORDER BY r.id
       }
       const userUid = user[0].uid;
 
-      // 2. Fetch all user's recipes and liked recipes with embeddings
       const recipes = await AppDataSource.query(
         `
         SELECT DISTINCT 
@@ -477,7 +473,7 @@ ORDER BY r.id
       }
 
       const recipesWithSimilarity = recipes
-        .filter((r: any) => r.embedding !== null) 
+        .filter((r: any) => r.embedding !== null)
         .map((recipe: any) => {
           let recipeEmbedding;
           try {
@@ -512,7 +508,7 @@ ORDER BY r.id
             distance,
           };
         })
-        .filter((r: any) => r !== null); 
+        .filter((r: any) => r !== null);
 
       const similarRecipes = recipesWithSimilarity
         .sort((a: any, b: any) => b.similarity - a.similarity)
@@ -672,5 +668,42 @@ ORDER BY r.id
     }
 
     return dotProduct / (magnitudeA * magnitudeB);
+  }
+
+  static async generateEmbeddingsOllamaAll(req: Request, res: Response) {
+    try {
+      const ollama = new OllamaService();
+      let processed = 0,
+        errors = 0;
+      const recipes = await AppDataSource.query(
+        `SELECT id, name, ingress, difficulty, servings, "prepTime", "cookTime" FROM recipe WHERE embedding IS NULL`
+      );
+      for (const recipe of recipes) {
+        const embedding = await ollama.embed(recipe.name);
+        if (!embedding || embedding.length === 0) {
+          errors++;
+          continue;
+        } else {
+          processed++;
+          const vectorLiteral = `[${embedding.join(",")}]`;
+          await AppDataSource.query(
+            `UPDATE recipe SET embedding = $1::vector WHERE id = $2`,
+            [vectorLiteral, recipe.id]
+          );
+        }
+      }
+      return res.status(200).json({
+        message: "Embeddings generation completed",
+        processed,
+        errors,
+        total: recipes.length,
+      });
+    } catch (error) {
+      console.error("Embeddings generation error:", error);
+      res.status(500).json({
+        message: "Internal server error",
+        error: error,
+      });
+    }
   }
 }

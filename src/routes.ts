@@ -29,4 +29,6 @@ mainRouter.post(
   UserController.generateEmbeddingsOllama
 );
 
+mainRouter.post('/ollama/genreate-embeddings/all', UserController.generateEmbeddingsOllamaAll);
+
 export default mainRouter;

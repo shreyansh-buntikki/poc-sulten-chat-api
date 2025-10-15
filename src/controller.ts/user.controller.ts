@@ -437,13 +437,36 @@ ORDER BY r.id
         return res.status(404).json({ message: "User not found" });
       }
       const userUid = user[0].uid;
+      const lc = new LangchainChatService();
+      const history = await lc.getPreviousMessages(userUid);
+      const lastAIMessage = history
+        .filter((m: any) => m._getType() === "ai")
+        .slice(-1)[0];
 
-      const topicCheckPrompt = `Decide if the user message is about food, recipes, cooking, ingredients, or meal planning.
-Reply only with "YES" if it is food-related or indicates continuation (e.g., "yes", "sure", "continue", etc.).
-Otherwise, reply only with "NO".
-User message: "${message}"
+      const lastAIContent = lastAIMessage
+        ? typeof lastAIMessage.content === "string"
+          ? lastAIMessage.content
+          : String(lastAIMessage.content)
+        : null;
 
-Answer (YES or NO):`;
+      const topicCheckPrompt = lastAIContent
+        ? `You are checking if a conversation is about food/recipes/cooking.
+      
+      Previous assistant message: "${lastAIContent}"
+      User's reply: "${message}"
+      
+      Is this conversation about food, recipes, cooking, ingredients, or meal planning?
+      Reply only with "YES" if it is food-related or a continuation of the food conversation.
+      Otherwise reply only with "NO".
+      
+      Answer (YES or NO):`
+        : `Decide if the user message is about food, recipes, cooking, ingredients, or meal planning.
+      Reply only with "YES" if it is food-related.
+      Otherwise, reply only with "NO".
+      
+      User message: "${message}"
+      
+      Answer (YES or NO):`;
 
       const topicCheck = await ollama.chat([
         {
@@ -642,26 +665,73 @@ Answer (YES or NO):`;
           "No recipes found in your collection. Please add or like some recipes first.\n";
       }
 
-      const systemPrompt = `You are Sulten's cooking assistant.
-  
-  STRICT RULES ABOUT INSTRUCTIONS:
-  - Never invent or add steps that are not in the provided context.
-  - If instructions for a recipe are present in the context, you must use ONLY those steps.
-  - You may paraphrase wording slightly for clarity, but preserve the original step order and meaning exactly.
-  - Only provide the instructions if the user asks for them or explicitly confirms (e.g., replies "yes" when asked if they want instructions).
-  - If instructions are not available for a recipe, say so rather than making them up.
-  
-  RETRIEVAL SELECTION POLICY:
-  - The recipe list in the context already follows: 2 from liked, 3 from owned (if available), and 5 from global.
-  - Do not suggest more than what’s provided; reference only the recipes present in the context.
-  
-  GENERAL BEHAVIOR:
-  - Be helpful, friendly, and specific. Reference recipes by name.
-  - Answer based ONLY on the context provided below.
-  
-  ${context}`;
+      const systemPrompt =
+        similarRecipes.length > 0
+          ? `You are Sulten's cooking assistant.
 
-      const lc = new LangchainChatService();
+🚨 CRITICAL INSTRUCTION 🚨
+You MUST ONLY recommend recipes from the "Most Relevant Recipes" list below.
+You are NOT allowed to create, invent, or suggest any recipe that does not appear in this list.
+You MUST use the exact recipe names shown below.
+
+FORMATTING REQUIREMENTS:
+- Use Markdown formatting for all responses.
+- Recipe names should be bold: **Recipe Name**
+- Use bullet points (-) for lists
+- Use numbered lists (1. 2. 3.) for instructions
+- Use > for important notes or tips
+- Example format:
+
+**Spicy Coconut Thai Curry Soup** (75% match)
+
+This soup is perfect because:
+- Contains coconut milk
+- Authentic Thai flavors
+- Quick 20-minute cook time
+
+Would you like the full recipe instructions?
+
+INSTRUCTIONS RULES:
+- Never invent or add steps that are not in the provided context.
+- If instructions for a recipe are present, you must use ONLY those steps.
+- You may paraphrase wording slightly for clarity, but preserve the original step order and meaning exactly.
+- Only provide full instructions if the user explicitly asks for them or confirms interest.
+- If instructions are not available for a recipe, say so rather than making them up.
+
+${context}
+
+REMINDER: You can ONLY recommend recipes from the "Most Relevant Recipes" list above. Do not create new recipes.`
+          : `You are Sulten's cooking assistant.
+
+I could not find any matching recipes in the database for this request.
+
+FORMATTING REQUIREMENTS:
+- Use Markdown formatting for all responses
+- Recipe name should be bold: **Recipe Name**
+- Use numbered lists for instructions
+- Use bullet points for ingredients
+- Example format:
+
+**Thai Coconut Curry with Your Ingredients**
+
+### Ingredients:
+- Coconut milk
+- Garlic chives
+- Yellow onion
+- Carrot
+
+### Instructions:
+1. Heat oil in a pan
+2. Add onions and cook until soft
+3. ...
+
+> 💡 **Tip:** This is a custom suggestion since no exact matches were found in your collection.
+
+Would you like me to save this recipe to your collection?
+
+Since no recipes were found, create a helpful recipe suggestion based on:
+User's request: ${message}`;
+
       const { content, memory } = await lc.generateReply(
         userUid,
         systemPrompt,
@@ -682,6 +752,7 @@ Answer (YES or NO):`;
           likedTop2,
           ownedTop3,
           globalTop5,
+          systemPrompt,
           relevantRecipesFound: similarRecipes.length,
           topRelevantRecipes: similarRecipes.map((r: any) => ({
             name: r.recipe_name,
@@ -732,22 +803,80 @@ Answer (YES or NO):`;
       let processed = 0,
         errors = 0;
       const recipes = await AppDataSource.query(
-        `SELECT id, name, ingress, difficulty, servings, "prepTime", "cookTime" FROM recipe WHERE embedding IS NULL`
+        `SELECT id, name, ingress, difficulty, servings, "prepTime", "cookTime" FROM recipe`
       );
       for (const recipe of recipes) {
-        const embedding = await ollama.embed(recipe.name);
-        if (!embedding || embedding.length === 0) {
-          errors++;
-          continue;
-        } else {
+        try {
+          // Gather ingredients (names only) for signal
+          const ingredientsRows = await AppDataSource.query(
+            `
+            SELECT i.name
+            FROM recipe_ingredient ri
+            INNER JOIN ingredient i ON ri."ingredientId" = i.id
+            WHERE ri."recipeId" = $1
+            ORDER BY ri."order"
+            `,
+            [recipe.id]
+          );
+
+          // Gather tags via existing mapping table (if present)
+          let tagNames: string[] = [];
+          try {
+            const tags = await AppDataSource.query(
+              `
+              SELECT t.name
+              FROM tag t
+              INNER JOIN recipe_tags_tag rtt ON rtt."tagId" = t.id
+              WHERE rtt."recipeId" = $1
+              `,
+              [recipe.id]
+            );
+            tagNames = (tags || []).map((t: any) => t.name).filter(Boolean);
+          } catch (__) {
+            tagNames = [];
+          }
+
+          const ingredientNames: string[] = (ingredientsRows || [])
+            .map((r: any) => r.name)
+            .filter(Boolean);
+
+          // Build a concise, consistent embedding text
+          const parts: string[] = [];
+          parts.push(`Recipe: ${recipe.name}`);
+          if (recipe.ingress) parts.push(`Description: ${recipe.ingress}`);
+          if (Array.isArray(tagNames) && tagNames.length > 0)
+            parts.push(`Tags: ${tagNames.join(", ")}`);
+          if (ingredientNames.length > 0)
+            parts.push(`Ingredients: ${ingredientNames.join(", ")}`);
+          if (recipe.difficulty) parts.push(`Difficulty: ${recipe.difficulty}`);
+          if (recipe.servings) parts.push(`Serves: ${recipe.servings}`);
+          const totalTime = (recipe.prepTime || 0) + (recipe.cookTime || 0);
+          if (totalTime) parts.push(`TotalTimeMin: ${totalTime}`);
+
+          const embeddingText = parts.join("\n");
+
+          const embedding = await ollama.embed(embeddingText);
+          if (!embedding || embedding.length === 0) {
+            errors++;
+            continue;
+          }
+
           processed++;
           const vectorLiteral = `[${embedding.join(",")}]`;
           await AppDataSource.query(
             `UPDATE recipe SET embedding = $1::vector WHERE id = $2`,
             [vectorLiteral, recipe.id]
           );
+        } catch (e) {
+          errors++;
+          // skip and continue processing remaining recipes
         }
       }
+      console.info("Embeddings generation completed", {
+        processed,
+        errors,
+        total: recipes.length,
+      });
       return res.status(200).json({
         message: "Embeddings generation completed",
         processed,

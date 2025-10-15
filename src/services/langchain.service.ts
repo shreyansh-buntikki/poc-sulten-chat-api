@@ -31,12 +31,19 @@ export class LangchainChatService {
     }
     return mem;
   }
+  
+  async getPreviousMessages(userUid: string) {
+    const memory = this.getMemoryFor(userUid);
+    const vars = await memory.loadMemoryVariables({});
+    const history = (vars["history"] as (AIMessage | HumanMessage)[]) || [];
+    return history;
+  }
 
   async generateReply(
     userUid: string,
     systemPrompt: string,
     userMessage: string
-  ): Promise<string> {
+  ): Promise<{ content: string; memory: ConversationTokenBufferMemory }> {
     const memory = this.getMemoryFor(userUid);
     const vars = await memory.loadMemoryVariables({});
     const history = (vars["history"] as (AIMessage | HumanMessage)[]) || [];
@@ -60,6 +67,6 @@ export class LangchainChatService {
     })();
 
     await memory.saveContext({ input: userMessage }, { output: content });
-    return content;
+    return { content, memory };
   }
 }

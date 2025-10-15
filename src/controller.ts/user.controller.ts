@@ -438,14 +438,40 @@ ORDER BY r.id
       }
       const userUid = user[0].uid;
 
-      // Generate question embedding once
+      const topicCheckPrompt = `Analyze if this user question is related to food, recipes, cooking, ingredients, or meal planning.
+Respond with only "YES" if it's food-related, or "NO" if it's about other topics like programming, technology, general knowledge, etc.
+
+User question: "${message}"
+
+Answer (YES or NO):`;
+
+      const topicCheck = await ollama.chat([
+        {
+          role: "user",
+          content: topicCheckPrompt,
+        },
+      ]);
+
+      const isOnTopic = topicCheck.trim().toUpperCase().includes("YES");
+
+      if (!isOnTopic) {
+        return res.status(200).json({
+          response:
+            "Hi, I'm Sulten's cooking assistant and can only help with food and recipe-related questions. Please ask me about recipes, ingredients, cooking techniques, or meal planning!",
+          debug: {
+            question: message,
+            reason: "Question is off-topic",
+            topicCheck,
+            isOnTopic,
+          },
+        });
+      }
       const questionEmbedding = await ollama.embed(message);
       if (!questionEmbedding || questionEmbedding.length === 0) {
         throw new Error("Failed to generate question embedding");
       }
       const vectorLiteral = `[${questionEmbedding.join(",")}]`;
 
-      // 2 from liked
       const likedTop2 = await AppDataSource.query(
         `
         SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
@@ -467,7 +493,6 @@ ORDER BY r.id
         [vectorLiteral, userUid]
       );
 
-      // 3 from owned
       const ownedTop3 = await AppDataSource.query(
         `
         SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
@@ -484,7 +509,6 @@ ORDER BY r.id
         [vectorLiteral, userUid]
       );
 
-      // 5 from global excluding already selected ids
       const excludeIds: string[] = [
         ...new Set<string>([...likedTop2, ...ownedTop3].map((r: any) => r.id)),
       ];
@@ -535,25 +559,25 @@ ORDER BY r.id
         `,
         [userUid]
       );
+      let context = "";
+      // let context = "## Available Ingredients:\n";
+      // if (userIngredients.length > 0) {
+      //   const priorityIngredients = userIngredients
+      //     .filter((i: any) => i.is_priority)
+      //     .map((i: any) => i.name);
+      //   const otherIngredients = userIngredients
+      //     .filter((i: any) => !i.is_priority)
+      //     .map((i: any) => i.name);
 
-      let context = "## Available Ingredients:\n";
-      if (userIngredients.length > 0) {
-        const priorityIngredients = userIngredients
-          .filter((i: any) => i.is_priority)
-          .map((i: any) => i.name);
-        const otherIngredients = userIngredients
-          .filter((i: any) => !i.is_priority)
-          .map((i: any) => i.name);
-
-        if (priorityIngredients.length > 0) {
-          context += `Priority: ${priorityIngredients.join(", ")}\n`;
-        }
-        if (otherIngredients.length > 0) {
-          context += `Others: ${otherIngredients.join(", ")}\n`;
-        }
-      } else {
-        context += "None specified\n";
-      }
+      //   if (priorityIngredients.length > 0) {
+      //     context += `Priority: ${priorityIngredients.join(", ")}\n`;
+      //   }
+      //   if (otherIngredients.length > 0) {
+      //     context += `Others: ${otherIngredients.join(", ")}\n`;
+      //   }
+      // } else {
+      //   context += "None specified\n";
+      // }
 
       context +=
         "\n## Most Relevant Recipes (Retrieved via Semantic Search):\n";
@@ -563,7 +587,11 @@ ORDER BY r.id
           const total = (r.prepTime || 0) + (r.cookTime || 0);
           const similarityPercent = (r.similarity * 100)?.toFixed(0);
           const typeLabel =
-            r.recipe_type === "owned" ? "(Your Recipe)" : "(Liked)";
+            r.recipe_type === "owned"
+              ? "(Your Recipe)"
+              : r.recipe_type === "liked"
+              ? "(Liked)"
+              : "";
           context += `${idx + 1}. **${
             r.recipe_name
           }** ${typeLabel} (${similarityPercent}% match)\n`;
@@ -583,15 +611,23 @@ ORDER BY r.id
   
   ${context}`;
 
-      // Use LangChain memory-backed chat for continuity
       const lc = new LangchainChatService();
-      const reply = await lc.generateReply(userUid, systemPrompt, message);
+      const { content, memory } = await lc.generateReply(
+        userUid,
+        systemPrompt,
+        message
+      );
+
+      const previousMessages = await lc.getPreviousMessages(userUid);
 
       return res.status(200).json({
-        response: reply,
+        response: content,
+        previousMessages,
         debug: {
+          memory,
           question: message,
           embeddingGenerated: true,
+          userIngredients,
           calculationMethod: "SQL pgvector similarity + boosts",
           likedTop2,
           ownedTop3,

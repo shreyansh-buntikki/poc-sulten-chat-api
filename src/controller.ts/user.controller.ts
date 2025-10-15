@@ -762,4 +762,29 @@ Answer (YES or NO):`;
       });
     }
   }
+
+  static async getChatHistory(req: Request, res: Response) {
+    try {
+      const { username } = req.params;
+      const user = await AppDataSource.query(
+        `SELECT uid FROM "user" WHERE username = $1`,
+        [username]
+      );
+      if (!user || user.length === 0) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      const userUid = user[0].uid;
+
+      const lc = new LangchainChatService();
+      const previousMessages = await lc.getPreviousMessages(userUid);
+
+      return res.status(200).json({
+        username,
+        userUid,
+        previousMessages,
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error", error });
+    }
+  }
 }

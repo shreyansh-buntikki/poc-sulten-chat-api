@@ -24,11 +24,17 @@ mainRouter.post(
 
 mainRouter.post("/ollama/:username/chat", UserController.chatOllama);
 
+// Chat history endpoint
+mainRouter.get("/ollama/:username/history", UserController.getChatHistory);
+
 mainRouter.post(
   "/user/:username/ollama/generate-embeddings",
   UserController.generateEmbeddingsOllama
 );
 
-mainRouter.post('/ollama/genreate-embeddings/all', UserController.generateEmbeddingsOllamaAll);
+mainRouter.post(
+  "/ollama/genreate-embeddings/all",
+  UserController.generateEmbeddingsOllamaAll
+);
 
 export default mainRouter;

@@ -438,10 +438,10 @@ ORDER BY r.id
       }
       const userUid = user[0].uid;
 
-      const topicCheckPrompt = `Analyze if this user question is related to food, recipes, cooking, ingredients, or meal planning.
-Respond with only "YES" if it's food-related, or "NO" if it's about other topics like programming, technology, general knowledge, etc.
-
-User question: "${message}"
+      const topicCheckPrompt = `Decide if the user message is about food, recipes, cooking, ingredients, or meal planning.
+Reply only with "YES" if it is food-related or indicates continuation (e.g., "yes", "sure", "continue", etc.).
+Otherwise, reply only with "NO".
+User message: "${message}"
 
 Answer (YES or NO):`;
 
@@ -476,6 +476,14 @@ Answer (YES or NO):`;
         `
         SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
                1 - (r.embedding <=> $1::vector) AS similarity,
+               (
+                 SELECT COALESCE(
+                   json_agg(json_build_object('order', rin."order", 'description', rin.description) ORDER BY rin."order"),
+                   '[]'::json
+                 )
+                 FROM recipe_instruction rin
+                 WHERE rin."recipeId" = r.id
+               ) AS instructions,
                'liked'::text AS recipe_type
         FROM recipe r
         WHERE r.embedding IS NOT NULL
@@ -497,6 +505,14 @@ Answer (YES or NO):`;
         `
         SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
                1 - (r.embedding <=> $1::vector) AS similarity,
+               (
+                 SELECT COALESCE(
+                   json_agg(json_build_object('order', rin."order", 'description', rin.description) ORDER BY rin."order"),
+                   '[]'::json
+                 )
+                 FROM recipe_instruction rin
+                 WHERE rin."recipeId" = r.id
+               ) AS instructions,
                'owned'::text AS recipe_type
         FROM recipe r
         WHERE r.embedding IS NOT NULL
@@ -517,6 +533,14 @@ Answer (YES or NO):`;
         `
         SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
                1 - (r.embedding <=> $1::vector) AS similarity,
+               (
+                 SELECT COALESCE(
+                   json_agg(json_build_object('order', rin."order", 'description', rin.description) ORDER BY rin."order"),
+                   '[]'::json
+                 )
+                 FROM recipe_instruction rin
+                 WHERE rin."recipeId" = r.id
+               ) AS instructions,
                'global'::text AS recipe_type
         FROM recipe r
         WHERE r.embedding IS NOT NULL
@@ -548,6 +572,8 @@ Answer (YES or NO):`;
           )?.toFixed(1)}%`
         );
       });
+
+      // Instructions included per recipe row as JSON array in field `instructions`
 
       const userIngredients = await AppDataSource.query(
         `
@@ -598,16 +624,40 @@ Answer (YES or NO):`;
           context += `   ${r.ingress || "No description"}\n`;
           context += `   ${r.difficulty} difficulty | Serves ${
             r.servings || "N/A"
-          } | ${total ? total + " min" : "Time N/A"}\n\n`;
+          } | ${total ? total + " min" : "Time N/A"}\n`;
+
+          const steps = Array.isArray(r.instructions) ? r.instructions : [];
+          if (steps.length > 0) {
+            context += `   Instructions:\n`;
+            steps.forEach((s: any, si: number) => {
+              if (s?.description) {
+                context += `     ${si + 1}. ${s.description}\n`;
+              }
+            });
+          }
+          context += `\n`;
         });
       } else {
         context +=
           "No recipes found in your collection. Please add or like some recipes first.\n";
       }
 
-      const systemPrompt = `You are Sulten's cooking assistant. Answer based ONLY on the context provided below. The recipes shown are selected as: 2 liked, 3 owned (if available), and 5 global by semantic search.
+      const systemPrompt = `You are Sulten's cooking assistant.
   
-  Be helpful, friendly, and specific. Reference the recipes by name and explain why they match the user's request.
+  STRICT RULES ABOUT INSTRUCTIONS:
+  - Never invent or add steps that are not in the provided context.
+  - If instructions for a recipe are present in the context, you must use ONLY those steps.
+  - You may paraphrase wording slightly for clarity, but preserve the original step order and meaning exactly.
+  - Only provide the instructions if the user asks for them or explicitly confirms (e.g., replies "yes" when asked if they want instructions).
+  - If instructions are not available for a recipe, say so rather than making them up.
+  
+  RETRIEVAL SELECTION POLICY:
+  - The recipe list in the context already follows: 2 from liked, 3 from owned (if available), and 5 from global.
+  - Do not suggest more than what’s provided; reference only the recipes present in the context.
+  
+  GENERAL BEHAVIOR:
+  - Be helpful, friendly, and specific. Reference recipes by name.
+  - Answer based ONLY on the context provided below.
   
   ${context}`;
 

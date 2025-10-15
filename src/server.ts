@@ -41,6 +41,7 @@ AppDataSource.initialize()
     app.listen(PORT, () => {
       console.log(`Server running at http://localhost:${PORT}`);
     });
+    console.log('PID', process.pid, 'listening')
   })
   .catch((error) => {
     console.error("Database connection failed:", error);

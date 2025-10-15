@@ -7,10 +7,15 @@ import { Recipe } from "../entities/entities/Recipe";
 import { Like as LikeRepo } from "../entities/entities/Like";
 import { EmbeddingsService } from "../services/embeddings.service";
 import { OllamaService } from "../services/ollama.service";
+import { LangchainChatService } from "../services/langchain.service";
 
 const ApiKey = process.env.AI_KEY;
 
 export class UserController {
+  private static chatHistory: Map<
+    string,
+    Array<{ role: "system" | "user" | "assistant"; content: string }>
+  > = new Map();
   static async search(req: Request, res: Response) {
     try {
       const { user } = req.query;
@@ -438,73 +443,79 @@ ORDER BY r.id
       if (!questionEmbedding || questionEmbedding.length === 0) {
         throw new Error("Failed to generate question embedding");
       }
-
-      // Build pgvector literal and dessert cue flag
       const vectorLiteral = `[${questionEmbedding.join(",")}]`;
-      const hasDessertCue = /cake|dessert|sweet/i.test(message);
 
-      // Single SQL with similarity and boosts; robust liked detection via polymorphic like table
-      const similarRecipes = await AppDataSource.query(
+      // 2 from liked
+      const likedTop2 = await AppDataSource.query(
         `
-        SELECT
-          r.id,
-          r.name AS recipe_name,
-          r.ingress,
-          r.difficulty,
-          r.servings,
-          r."prepTime",
-          r."cookTime",
-          CASE WHEN r."userUid" = $2 THEN 'owned' ELSE 'liked' END AS recipe_type,
-          1 - (r.embedding <=> $1::vector) AS similarity,
-          (
-            CASE WHEN r."userUid" = $2 THEN 0.10 ELSE 0 END
-            + CASE WHEN EXISTS (
-                SELECT 1 FROM "like" lk
-                WHERE lk."userUid" = $2
-                  AND lower(trim(lk."entityType")) = 'recipe'
-                  AND trim(lk."entityId") = r.id::text
-              ) THEN 0.15 ELSE 0 END
-            + CASE WHEN $3 AND (
-                r.name ILIKE '%cake%'
-                OR r.ingress ILIKE '%cake%'
-                OR r.ingress ILIKE '%sweet%'
-                OR r.name ILIKE '%dessert%'
-              ) THEN 0.05 ELSE 0 END
-          ) AS boost,
-          (
-            1 - (r.embedding <=> $1::vector)
-            + CASE WHEN r."userUid" = $2 THEN 0.10 ELSE 0 END
-            + CASE WHEN EXISTS (
-                SELECT 1 FROM "like" lk
-                WHERE lk."userUid" = $2
-                  AND lower(trim(lk."entityType")) = 'recipe'
-                  AND trim(lk."entityId") = r.id::text
-              ) THEN 0.15 ELSE 0 END
-            + CASE WHEN $3 AND (
-                r.name ILIKE '%cake%'
-                OR r.ingress ILIKE '%cake%'
-                OR r.ingress ILIKE '%sweet%'
-                OR r.name ILIKE '%dessert%'
-              ) THEN 0.05 ELSE 0 END
-          ) AS score
+        SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
+               1 - (r.embedding <=> $1::vector) AS similarity,
+               'liked'::text AS recipe_type
         FROM recipe r
         WHERE r.embedding IS NOT NULL
           AND r.status = 'published'
           AND r."deletedAt" IS NULL
-          AND (
-            r."userUid" = $2
-            OR EXISTS (
-              SELECT 1 FROM "like" lk
-              WHERE lk."userUid" = $2
-                AND lower(trim(lk."entityType")) = 'recipe'
-                AND trim(lk."entityId") = r.id::text
-            )
+          AND EXISTS (
+            SELECT 1 FROM "like" lk
+            WHERE lk."userUid" = $2
+              AND lower(trim(lk."entityType")) = 'recipe'
+              AND trim(lk."entityId") = r.id::text
           )
-        ORDER BY score DESC
-        LIMIT 8
+        ORDER BY r.embedding <=> $1::vector
+        LIMIT 2
         `,
-        [vectorLiteral, userUid, hasDessertCue]
+        [vectorLiteral, userUid]
       );
+
+      // 3 from owned
+      const ownedTop3 = await AppDataSource.query(
+        `
+        SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
+               1 - (r.embedding <=> $1::vector) AS similarity,
+               'owned'::text AS recipe_type
+        FROM recipe r
+        WHERE r.embedding IS NOT NULL
+          AND r.status = 'published'
+          AND r."deletedAt" IS NULL
+          AND r."userUid" = $2
+        ORDER BY r.embedding <=> $1::vector
+        LIMIT 3
+        `,
+        [vectorLiteral, userUid]
+      );
+
+      // 5 from global excluding already selected ids
+      const excludeIds: string[] = [
+        ...new Set<string>([...likedTop2, ...ownedTop3].map((r: any) => r.id)),
+      ];
+      const excludeArray = `{${excludeIds.join(",")}}`;
+      const globalTop5 = await AppDataSource.query(
+        `
+        SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
+               1 - (r.embedding <=> $1::vector) AS similarity,
+               'global'::text AS recipe_type
+        FROM recipe r
+        WHERE r.embedding IS NOT NULL
+          AND r.status = 'published'
+          AND r."deletedAt" IS NULL
+          AND (array_length($2::uuid[],1) IS NULL OR r.id <> ALL($2::uuid[]))
+        ORDER BY r.embedding <=> $1::vector
+        LIMIT 5
+        `,
+        [vectorLiteral, excludeArray]
+      );
+
+      console.log({
+        likedTop2,
+        ownedTop3,
+        globalTop5,
+      });
+
+      const similarRecipes = [
+        ...likedTop2,
+        ...ownedTop3.filter((r: any) => !excludeIds.includes(r.id)),
+        ...globalTop5,
+      ];
 
       similarRecipes.forEach((r: any, idx: number) => {
         console.log(
@@ -566,16 +577,15 @@ ORDER BY r.id
           "No recipes found in your collection. Please add or like some recipes first.\n";
       }
 
-      const systemPrompt = `You are Sulten's cooking assistant. Answer based ONLY on the context provided below. The recipes shown are the most semantically relevant to the user's question based on vector similarity search.
+      const systemPrompt = `You are Sulten's cooking assistant. Answer based ONLY on the context provided below. The recipes shown are selected as: 2 liked, 3 owned (if available), and 5 global by semantic search.
   
   Be helpful, friendly, and specific. Reference the recipes by name and explain why they match the user's request.
   
   ${context}`;
 
-      const reply = await ollama.chat([
-        { role: "system", content: systemPrompt },
-        { role: "user", content: message },
-      ]);
+      // Use LangChain memory-backed chat for continuity
+      const lc = new LangchainChatService();
+      const reply = await lc.generateReply(userUid, systemPrompt, message);
 
       return res.status(200).json({
         response: reply,
@@ -583,7 +593,9 @@ ORDER BY r.id
           question: message,
           embeddingGenerated: true,
           calculationMethod: "SQL pgvector similarity + boosts",
-
+          likedTop2,
+          ownedTop3,
+          globalTop5,
           relevantRecipesFound: similarRecipes.length,
           topRelevantRecipes: similarRecipes.map((r: any) => ({
             name: r.recipe_name,

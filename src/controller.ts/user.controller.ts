@@ -428,6 +428,10 @@ ORDER BY r.id
       const { username } = req.params;
       const { message } = req.body;
       const ollama = new OllamaService();
+      let timeToQuery = 0;
+      let timeToGenerateEmbedding = 0;
+      let timeToGenerateAIResponse = 0;
+      let timeToCheckTopic = 0;
 
       const user = await AppDataSource.query(
         `SELECT uid FROM "user" WHERE username = $1`,
@@ -449,6 +453,7 @@ ORDER BY r.id
           : String(lastAIMessage.content)
         : null;
 
+      const topicCheckStartTime = Date.now();
       const topicCheckPrompt = lastAIContent
         ? `You are checking if a conversation is about food/recipes/cooking.
       
@@ -475,6 +480,9 @@ ORDER BY r.id
         },
       ]);
 
+      const topicCheckEndTime = Date.now();
+      timeToCheckTopic = topicCheckEndTime - topicCheckStartTime;
+
       const isOnTopic = topicCheck.trim().toUpperCase().includes("YES");
 
       if (!isOnTopic) {
@@ -489,12 +497,16 @@ ORDER BY r.id
           },
         });
       }
+      const questionEmbeddingStartTime = Date.now();
       const questionEmbedding = await ollama.embed(message);
+      const questionEmbeddingEndTime = Date.now();
+      timeToGenerateEmbedding =
+        questionEmbeddingEndTime - questionEmbeddingStartTime;
       if (!questionEmbedding || questionEmbedding.length === 0) {
         throw new Error("Failed to generate question embedding");
       }
       const vectorLiteral = `[${questionEmbedding.join(",")}]`;
-
+      const queryStartTime = Date.now();
       const likedTop2 = await AppDataSource.query(
         `
         SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
@@ -608,6 +620,8 @@ ORDER BY r.id
         `,
         [userUid]
       );
+      const queryEndTime = Date.now();
+      timeToQuery = queryEndTime - queryStartTime;
       let context = "";
       // let context = "## Available Ingredients:\n";
       // if (userIngredients.length > 0) {
@@ -664,6 +678,7 @@ ORDER BY r.id
         context +=
           "No recipes found in your collection. Please add or like some recipes first.\n";
       }
+      const systemPromptStartTime = Date.now();
 
       const systemPrompt =
         similarRecipes.length > 0
@@ -737,6 +752,8 @@ User's request: ${message}`;
         systemPrompt,
         message
       );
+      const systemPromptEndTime = Date.now();
+      timeToGenerateAIResponse = systemPromptEndTime - systemPromptStartTime;
 
       const previousMessages = await lc.getPreviousMessages(userUid);
 
@@ -753,6 +770,12 @@ User's request: ${message}`;
           ownedTop3,
           globalTop5,
           systemPrompt,
+          time: {
+            timeToCheckTopic,
+            timeToGenerateEmbedding,
+            timeToQuery,
+            timeToGenerateAIResponse,
+          },
           relevantRecipesFound: similarRecipes.length,
           topRelevantRecipes: similarRecipes.map((r: any) => ({
             name: r.recipe_name,
@@ -819,7 +842,6 @@ User's request: ${message}`;
             [recipe.id]
           );
 
-          // Gather tags via existing mapping table (if present)
           let tagNames: string[] = [];
           try {
             const tags = await AppDataSource.query(
@@ -840,7 +862,6 @@ User's request: ${message}`;
             .map((r: any) => r.name)
             .filter(Boolean);
 
-          // Build a concise, consistent embedding text
           const parts: string[] = [];
           parts.push(`Recipe: ${recipe.name}`);
           if (recipe.ingress) parts.push(`Description: ${recipe.ingress}`);

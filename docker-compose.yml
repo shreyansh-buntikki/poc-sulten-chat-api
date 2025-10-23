@@ -40,6 +40,8 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      AI_KEY: ${AI_KEY}
     ports:
       - "${PORT}:${PORT}"
     extra_hosts:

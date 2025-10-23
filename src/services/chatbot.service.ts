@@ -36,7 +36,7 @@ export class ChatbotService {
 
 ${context}`;
 
-      const response = await this.llmService.chat(systemPrompt, question);
+      const response = await this.llmService.chat(systemPrompt, question, []);
       return response;
     } catch (error) {
       console.error("Error in RAG pipeline:", error);

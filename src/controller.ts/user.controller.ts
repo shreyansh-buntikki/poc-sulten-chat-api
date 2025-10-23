@@ -8,6 +8,7 @@ import { Like as LikeRepo } from "../entities/entities/Like";
 import { EmbeddingsService } from "../services/embeddings.service";
 import { OllamaService } from "../services/ollama.service";
 import { LangchainChatService } from "../services/langchain.service";
+import { LlmService } from "../services/llm.service";
 
 const ApiKey = process.env.AI_KEY;
 
@@ -125,21 +126,23 @@ export class UserController {
         });
       }
 
-      const results = await RecipeRepository.find({
-        where: {
-          userU: {
-            uid: user.uid,
+      const [results, likedRecipes] = await Promise.all([
+        RecipeRepository.find({
+          where: {
+            userU: {
+              uid: user.uid,
+            },
           },
-        },
-      });
-      const likedRecipes = await RecipeRepository.createQueryBuilder("recipe")
-        .innerJoin(
-          LikeRepo,
-          "lk",
-          '"lk"."entityType" = :entityType AND "lk"."userUid" = :uid AND "recipe"."id"::text = "lk"."entityId"',
-          { entityType: "recipe", uid: user.uid }
-        )
-        .getMany();
+        }),
+        RecipeRepository.createQueryBuilder("recipe")
+          .innerJoin(
+            LikeRepo,
+            "lk",
+            '"lk"."entityType" = :entityType AND "lk"."userUid" = :uid AND "recipe"."id"::text = "lk"."entityId"',
+            { entityType: "recipe", uid: user.uid }
+          )
+          .getMany(),
+      ]);
       return res.status(200).json({
         userRecipes: results,
         likedRecipes,
@@ -428,6 +431,7 @@ ORDER BY r.id
       const { username } = req.params;
       const { message } = req.body;
       const ollama = new OllamaService();
+      const llmService = new LlmService();
       let timeToQuery = 0;
       let timeToGenerateEmbedding = 0;
       let timeToGenerateAIResponse = 0;
@@ -473,12 +477,7 @@ ORDER BY r.id
       
       Answer (YES or NO):`;
 
-      const topicCheck = await ollama.chat([
-        {
-          role: "user",
-          content: topicCheckPrompt,
-        },
-      ]);
+      const topicCheck = await llmService.chat("", topicCheckPrompt, []);
 
       const topicCheckEndTime = Date.now();
       timeToCheckTopic = topicCheckEndTime - topicCheckStartTime;
@@ -509,7 +508,7 @@ ORDER BY r.id
       const queryStartTime = Date.now();
       const likedTop2 = await AppDataSource.query(
         `
-        SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
+        SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
                1 - (r.embedding <=> $1::vector) AS similarity,
                (
                  SELECT COALESCE(
@@ -538,7 +537,7 @@ ORDER BY r.id
 
       const ownedTop3 = await AppDataSource.query(
         `
-        SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
+        SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
                1 - (r.embedding <=> $1::vector) AS similarity,
                (
                  SELECT COALESCE(
@@ -566,7 +565,7 @@ ORDER BY r.id
       const excludeArray = `{${excludeIds.join(",")}}`;
       const globalTop5 = await AppDataSource.query(
         `
-        SELECT r.id, r.name AS recipe_name, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
+        SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
                1 - (r.embedding <=> $1::vector) AS similarity,
                (
                  SELECT COALESCE(
@@ -655,13 +654,14 @@ ORDER BY r.id
               : r.recipe_type === "liked"
               ? "(Liked)"
               : "";
-          context += `${idx + 1}. **${
+          context += `${idx + 1}. Recipe Name: "${
             r.recipe_name
-          }** ${typeLabel} (${similarityPercent}% match)\n`;
+          }" ${typeLabel} (${similarityPercent}% match)\n`;
+          context += `   Slug: ${r.slug || "no-slug"}\n`;
           context += `   ${r.ingress || "No description"}\n`;
-          context += `   ${r.difficulty} difficulty | Serves ${
-            r.servings || "N/A"
-          } | ${total ? total + " min" : "Time N/A"}\n`;
+          context += `   ${r.difficulty} difficulty | ${
+            total ? total + " min" : "Time N/A"
+          }\n`;
 
           const steps = Array.isArray(r.instructions) ? r.instructions : [];
           if (steps.length > 0) {
@@ -682,78 +682,100 @@ ORDER BY r.id
 
       const systemPrompt =
         similarRecipes.length > 0
-          ? `You are Sulten's cooking assistant.
+          ? `You are **Sulten**, a friendly and knowledgeable cooking assistant.
+Your job is to help users with recipes, ingredients, and cooking tips based only on the recipes listed below.
 
-🚨 CRITICAL INSTRUCTION 🚨
-You MUST ONLY recommend recipes from the "Most Relevant Recipes" list below.
-You are NOT allowed to create, invent, or suggest any recipe that does not appear in this list.
-You MUST use the exact recipe names shown below.
+### 🎯 Your Behavior
+- Be warm, conversational, and concise — like talking to a home cook friend.
+- Never invent new recipes. Only refer to the recipes from the “Most Relevant Recipes” list.
+- When explaining, speak naturally and clearly. Avoid sounding robotic or repetitive.
+- If the user seems unsure, guide them gently (“You could try…” / “A great option might be…”).
 
-FORMATTING REQUIREMENTS:
-- Use Markdown formatting for all responses.
-- Recipe names should be bold: **Recipe Name**
-- Use bullet points (-) for lists
-- Use numbered lists (1. 2. 3.) for instructions
-- Use > for important notes or tips
-- Example format:
+### 🧾 Response Guidelines
+- When the user asks for a recipe, ingredients, or how to cook something, use the **recipes below**.
+- If a recipe includes step-by-step instructions, list them clearly using numbered steps.
+- Prefer recipes with higher similarity scores (they match the user’s query better).
+- Mention why a recipe fits (“This matches your ingredients well” or “This is similar to what you liked before”).
 
-**Spicy Coconut Thai Curry Soup** (75% match)
+### ✨ Formatting Rules
+- Use **Markdown** formatting.
+- Recipe names MUST be hyperlinks using the format: [**Recipe Name**](https://sulten.app/en/recipes/SLUG) and should open in new tab
+- Replace SLUG with the actual slug provided for each recipe
+- Example: If recipe name is "Thaiwrap" and slug is "thaiwrap", format as [**Thaiwrap**](https://sulten.app/en/recipes/thaiwrap)
+- Use bullet points (–) for lists and numbered steps (1. 2. 3.) for instructions.
+- Use > for short cooking tips or notes.
+- Do not include serving counts or irrelevant metadata.
 
-This soup is perfect because:
-- Contains coconut milk
-- Authentic Thai flavors
-- Quick 20-minute cook time
-
-Would you like the full recipe instructions?
-
-INSTRUCTIONS RULES:
-- Never invent or add steps that are not in the provided context.
-- If instructions for a recipe are present, you must use ONLY those steps.
-- You may paraphrase wording slightly for clarity, but preserve the original step order and meaning exactly.
-- Only provide full instructions if the user explicitly asks for them or confirms interest.
-- If instructions are not available for a recipe, say so rather than making them up.
-
+### 📚 Most Relevant Recipes
 ${context}
 
-REMINDER: You can ONLY recommend recipes from the "Most Relevant Recipes" list above. Do not create new recipes.`
-          : `You are Sulten's cooking assistant.
+💡 Always choose responses from the recipes above. Do not create or name any new recipe yourself.`
+          : `You are **Sulten**, a friendly and creative cooking assistant.
 
-I could not find any matching recipes in the database for this request.
+I couldn’t find any exact matches for the user’s request in our recipe collection.  
+In this case, you may create a **custom helpful recipe** suggestion based on the user’s message.
 
-FORMATTING REQUIREMENTS:
-- Use Markdown formatting for all responses
-- Recipe name should be bold: **Recipe Name**
-- Use numbered lists for instructions
-- Use bullet points for ingredients
-- Example format:
+### 🎯 Your Behavior
+- Be friendly, encouraging, and approachable.
+- Suggest a recipe idea based on the ingredients or topic mentioned by the user.
+- Include a short description of the dish, a possible ingredient list, and simple instructions.
+- Keep the tone conversational — like explaining to a friend.
 
-**Thai Coconut Curry with Your Ingredients**
+### ✨ Formatting Rules
+- Use **Markdown** formatting.
+- Recipe name should be **bold**.
+- Use bullet points (–) for ingredients.
+- Use numbered steps (1. 2. 3.) for instructions.
+- End with a short encouraging note or tip.
 
-### Ingredients:
-- Coconut milk
-- Garlic chives
-- Yellow onion
-- Carrot
+### 🧾 Example Format
+**Thai Coconut Curry**
 
-### Instructions:
-1. Heat oil in a pan
-2. Add onions and cook until soft
-3. ...
+**Ingredients**
+- Coconut milk  
+- Garlic chives  
+- Yellow onion  
+- Carrot  
 
-> 💡 **Tip:** This is a custom suggestion since no exact matches were found in your collection.
+**Instructions**
+1. Heat oil in a pan.  
+2. Add onions and cook until soft.  
+3. Stir in coconut milk and spices.  
+4. Simmer until creamy and fragrant.
 
-Would you like me to save this recipe to your collection?
+> 💡 *Tip: Add tofu or paneer for extra protein.*
 
-Since no recipes were found, create a helpful recipe suggestion based on:
-User's request: ${message}`;
+Since no matches were found, create a helpful suggestion based on the user’s request:
+"${message}"`;
 
-      const { content, memory } = await lc.generateReply(
-        userUid,
+      // Use Gemini for response generation with conversation context
+      const conversationHistory = await lc.getPreviousMessages(userUid);
+
+      // Build conversation context for Gemini
+      let conversationContext = "";
+      if (conversationHistory.length > 0) {
+        conversationContext = "\n\n## Previous Conversation:\n";
+        conversationHistory.slice(-6).forEach((msg: any) => {
+          const role = msg._getType() === "human" ? "User" : "Assistant";
+          const content =
+            typeof msg.content === "string" ? msg.content : String(msg.content);
+          conversationContext += `${role}: ${content}\n`;
+        });
+      }
+
+      const fullPrompt = `${systemPrompt}${conversationContext}\n\nCurrent User Message: ${message}`;
+
+      const content = await llmService.chat(
         systemPrompt,
-        message
+        message,
+        conversationHistory
       );
       const systemPromptEndTime = Date.now();
       timeToGenerateAIResponse = systemPromptEndTime - systemPromptStartTime;
+
+      // Store the conversation in LangchainChatService for context
+      const memory = lc.getMemoryFor(userUid);
+      await memory.saveContext({ input: message }, { output: content });
 
       const previousMessages = await lc.getPreviousMessages(userUid);
 
@@ -761,8 +783,9 @@ User's request: ${message}`;
         response: content,
         previousMessages,
         debug: {
-          memory,
           question: message,
+          context,
+          conversationContext,
           embeddingGenerated: true,
           userIngredients,
           calculationMethod: "SQL pgvector similarity + boosts",
@@ -771,10 +794,10 @@ User's request: ${message}`;
           globalTop5,
           systemPrompt,
           time: {
-            timeToCheckTopic,
-            timeToGenerateEmbedding,
-            timeToQuery,
-            timeToGenerateAIResponse,
+            timeToCheckTopic: timeToCheckTopic / 1000,
+            timeToGenerateEmbedding: timeToGenerateEmbedding / 1000,
+            timeToQuery: timeToQuery / 1000,
+            timeToGenerateAIResponse: timeToGenerateAIResponse / 1000,
           },
           relevantRecipesFound: similarRecipes.length,
           topRelevantRecipes: similarRecipes.map((r: any) => ({

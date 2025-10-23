@@ -17,7 +17,7 @@ export class LangchainChatService {
     this.llm = new ChatOllama({ baseUrl, model });
   }
 
-  private getMemoryFor(userUid: string): ConversationTokenBufferMemory {
+  getMemoryFor(userUid: string): ConversationTokenBufferMemory {
     let mem = LangchainChatService.instances.get(userUid);
     if (!mem) {
       mem = new ConversationTokenBufferMemory({
@@ -31,7 +31,7 @@ export class LangchainChatService {
     }
     return mem;
   }
-  
+
   async getPreviousMessages(userUid: string) {
     const memory = this.getMemoryFor(userUid);
     const vars = await memory.loadMemoryVariables({});

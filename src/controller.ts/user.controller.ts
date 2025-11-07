@@ -429,7 +429,7 @@ ORDER BY r.id
   static async chatOllama(req: Request, res: Response) {
     try {
       const { username } = req.params;
-      const { message } = req.body;
+      const { message, model } = req.body;
       const ollama = new OllamaService();
       const llmService = new LlmService();
       let timeToQuery = 0;
@@ -477,25 +477,25 @@ ORDER BY r.id
       
       Answer (YES or NO):`;
 
-      const topicCheck = await llmService.chat("", topicCheckPrompt, []);
+      // const topicCheck = await llmService.chat("", topicCheckPrompt, []);
 
-      const topicCheckEndTime = Date.now();
-      timeToCheckTopic = topicCheckEndTime - topicCheckStartTime;
+      // const topicCheckEndTime = Date.now();
+      // timeToCheckTopic = topicCheckEndTime - topicCheckStartTime;
 
-      const isOnTopic = topicCheck.trim().toUpperCase().includes("YES");
+      // const isOnTopic = topicCheck.trim().toUpperCase().includes("YES");
 
-      if (!isOnTopic) {
-        return res.status(200).json({
-          response:
-            "Hi, I'm Sulten's cooking assistant and can only help with food and recipe-related questions. Please ask me about recipes, ingredients, cooking techniques, or meal planning!",
-          debug: {
-            question: message,
-            reason: "Question is off-topic",
-            topicCheck,
-            isOnTopic,
-          },
-        });
-      }
+      // if (!isOnTopic) {
+      //   return res.status(200).json({
+      //     response:
+      //       "Hi, I'm Sulten's cooking assistant and can only help with food and recipe-related questions. Please ask me about recipes, ingredients, cooking techniques, or meal planning!",
+      //     debug: {
+      //       question: message,
+      //       reason: "Question is off-topic",
+      //       topicCheck,
+      //       isOnTopic,
+      //     },
+      //   });
+      // }
       const questionEmbeddingStartTime = Date.now();
       const questionEmbedding = await ollama.embed(message);
       const questionEmbeddingEndTime = Date.now();
@@ -764,16 +764,28 @@ Since no matches were found, create a helpful suggestion based on the user’s r
       }
 
       const fullPrompt = `${systemPrompt}${conversationContext}\n\nCurrent User Message: ${message}`;
+      let content = "";
+      let completion;
 
-      const content = await llmService.chat(
-        systemPrompt,
-        message,
-        conversationHistory
-      );
+      if (model === "groq") {
+        console.log("Using Groq");
+
+        completion = await llmService.chatGroq(
+          systemPrompt,
+          message,
+          conversationHistory
+        );
+        content = completion.choices?.[0]?.message?.content ?? "";
+      } else if (model === "gemini") {
+        content = await llmService.chat(
+          systemPrompt,
+          message,
+          conversationHistory
+        );
+      }
       const systemPromptEndTime = Date.now();
       timeToGenerateAIResponse = systemPromptEndTime - systemPromptStartTime;
 
-      // Store the conversation in LangchainChatService for context
       const memory = lc.getMemoryFor(userUid);
       await memory.saveContext({ input: message }, { output: content });
 
@@ -783,12 +795,14 @@ Since no matches were found, create a helpful suggestion based on the user’s r
         response: content,
         previousMessages,
         debug: {
+          model,
+          completion,
           question: message,
           context,
           conversationContext,
           embeddingGenerated: true,
           userIngredients,
-          calculationMethod: "SQL pgvector similarity + boosts",
+          calculationMethod: "RAG Semantic search",
           likedTop2,
           ownedTop3,
           globalTop5,

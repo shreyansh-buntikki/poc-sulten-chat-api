@@ -9,6 +9,8 @@ import { EmbeddingsService } from "../services/embeddings.service";
 import { OllamaService } from "../services/ollama.service";
 import { LangchainChatService } from "../services/langchain.service";
 import { LlmService } from "../services/llm.service";
+import { MilvusService } from "../services/milvus.service";
+import { NO_RECIPES_FOUND_MESSAGE } from "../constants";
 
 const ApiKey = process.env.AI_KEY;
 
@@ -431,6 +433,7 @@ ORDER BY r.id
       const { username } = req.params;
       const { message, model } = req.body;
       const ollama = new OllamaService();
+      const milvus = new MilvusService();
       const llmService = new LlmService();
       let timeToQuery = 0;
       let timeToGenerateEmbedding = 0;
@@ -473,9 +476,9 @@ ORDER BY r.id
       Reply only with "YES" if it is food-related.
       Otherwise, reply only with "NO".
       
+      Answer (YES or NO):
       User message: "${message}"
-      
-      Answer (YES or NO):`;
+      `;
 
       // const topicCheck = await llmService.chat("", topicCheckPrompt, []);
 
@@ -496,20 +499,46 @@ ORDER BY r.id
       //     },
       //   });
       // }
+
       const questionEmbeddingStartTime = Date.now();
       const questionEmbedding = await ollama.embed(message);
+
+      const similarRecipesFromMilvus = await milvus.searchSimilarRecipes(
+        questionEmbedding,
+        10
+      );
+
       const questionEmbeddingEndTime = Date.now();
       timeToGenerateEmbedding =
         questionEmbeddingEndTime - questionEmbeddingStartTime;
+
       if (!questionEmbedding || questionEmbedding.length === 0) {
         throw new Error("Failed to generate question embedding");
       }
-      const vectorLiteral = `[${questionEmbedding.join(",")}]`;
+
+      const recipeIds = similarRecipesFromMilvus.map((r: any) => r.recipe_id);
+
+      if (recipeIds.length === 0) {
+        const response = await llmService.chat(
+          "",
+          NO_RECIPES_FOUND_MESSAGE + "${message}",
+          []
+        );
+        return res.status(200).json({
+          response: response,
+          debug: {
+            message: "No recipes found in Milvus",
+            recipeIds: [],
+          },
+        });
+      }
+
       const queryStartTime = Date.now();
-      const likedTop2 = await AppDataSource.query(
+
+      const recipes = await AppDataSource.query(
         `
-        SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
-               1 - (r.embedding <=> $1::vector) AS similarity,
+        SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, 
+               r.servings, r."prepTime", r."cookTime", r."userUid",
                (
                  SELECT COALESCE(
                    json_agg(json_build_object('order', rin."order", 'description', rin.description) ORDER BY rin."order"),
@@ -518,96 +547,77 @@ ORDER BY r.id
                  FROM recipe_instruction rin
                  WHERE rin."recipeId" = r.id
                ) AS instructions,
-               'liked'::text AS recipe_type
+               (
+                 SELECT COALESCE(
+                   json_agg(
+                     json_build_object(
+                       'name', i.name,
+                       'amount', ri.amount,
+                       'unit', (
+                         SELECT mut2.name 
+                         FROM measuring_unit_translation mut2 
+                         WHERE mut2."measuringUnitId" = mu.id 
+                         LIMIT 1
+                       ),
+                       'order', ri."order"
+                     ) ORDER BY ri."order"
+                   ),
+                   '[]'::json
+                 )
+                 FROM recipe_ingredient ri
+                 INNER JOIN ingredient i ON ri."ingredientId" = i.id
+                 LEFT JOIN measuring_unit mu ON ri."unitId" = mu.id
+                 WHERE ri."recipeId" = r.id
+               ) AS ingredients,
+               EXISTS (
+                 SELECT 1 FROM "like" lk
+                 WHERE lk."userUid" = $2
+                   AND lower(trim(lk."entityType")) = 'recipe'
+                   AND trim(lk."entityId") = r.id::text
+               ) AS is_liked
         FROM recipe r
-        WHERE r.embedding IS NOT NULL
+        WHERE r.id = ANY($1::uuid[])
           AND r.status = 'published'
           AND r."deletedAt" IS NULL
-          AND EXISTS (
-            SELECT 1 FROM "like" lk
-            WHERE lk."userUid" = $2
-              AND lower(trim(lk."entityType")) = 'recipe'
-              AND trim(lk."entityId") = r.id::text
-          )
-        ORDER BY r.embedding <=> $1::vector
-        LIMIT 2
         `,
-        [vectorLiteral, userUid]
+        [recipeIds, userUid]
       );
 
-      const ownedTop3 = await AppDataSource.query(
-        `
-        SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
-               1 - (r.embedding <=> $1::vector) AS similarity,
-               (
-                 SELECT COALESCE(
-                   json_agg(json_build_object('order', rin."order", 'description', rin.description) ORDER BY rin."order"),
-                   '[]'::json
-                 )
-                 FROM recipe_instruction rin
-                 WHERE rin."recipeId" = r.id
-               ) AS instructions,
-               'owned'::text AS recipe_type
-        FROM recipe r
-        WHERE r.embedding IS NOT NULL
-          AND r.status = 'published'
-          AND r."deletedAt" IS NULL
-          AND r."userUid" = $2
-        ORDER BY r.embedding <=> $1::vector
-        LIMIT 3
-        `,
-        [vectorLiteral, userUid]
-      );
+      // Map Milvus similarity scores to recipes
+      const recipeMap = new Map(recipes.map((r: any) => [r.id, r]));
+      const similarRecipes = similarRecipesFromMilvus
+        .map((milvusResult: any) => {
+          const recipe: any = recipeMap.get(milvusResult.recipe_id);
+          if (!recipe) return null;
 
-      const excludeIds: string[] = [
-        ...new Set<string>([...likedTop2, ...ownedTop3].map((r: any) => r.id)),
-      ];
-      const excludeArray = `{${excludeIds.join(",")}}`;
-      const globalTop5 = await AppDataSource.query(
-        `
-        SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, r.servings, r."prepTime", r."cookTime",
-               1 - (r.embedding <=> $1::vector) AS similarity,
-               (
-                 SELECT COALESCE(
-                   json_agg(json_build_object('order', rin."order", 'description', rin.description) ORDER BY rin."order"),
-                   '[]'::json
-                 )
-                 FROM recipe_instruction rin
-                 WHERE rin."recipeId" = r.id
-               ) AS instructions,
-               'global'::text AS recipe_type
-        FROM recipe r
-        WHERE r.embedding IS NOT NULL
-          AND r.status = 'published'
-          AND r."deletedAt" IS NULL
-          AND (array_length($2::uuid[],1) IS NULL OR r.id <> ALL($2::uuid[]))
-        ORDER BY r.embedding <=> $1::vector
-        LIMIT 5
-        `,
-        [vectorLiteral, excludeArray]
-      );
+          let recipe_type = "global";
+          if (recipe.userUid === userUid) {
+            recipe_type = "owned";
+          } else if (recipe.is_liked) {
+            recipe_type = "liked";
+          }
+
+          return {
+            ...recipe,
+            similarity: milvusResult.similarity,
+            recipe_type,
+          };
+        })
+        .filter((r: any) => r !== null);
 
       console.log({
-        likedTop2,
-        ownedTop3,
-        globalTop5,
+        milvusResults: similarRecipesFromMilvus.length,
+        recipesFromDB: recipes.length,
+        finalRecipes: similarRecipes.length,
       });
-
-      const similarRecipes = [
-        ...likedTop2,
-        ...ownedTop3.filter((r: any) => !excludeIds.includes(r.id)),
-        ...globalTop5,
-      ];
 
       similarRecipes.forEach((r: any, idx: number) => {
         console.log(
-          `${idx + 1}. ${r.name} (${r.recipe_type}) - Similarity: ${(
+          `${idx + 1}. ${r.recipe_name} (${r.recipe_type}) - Similarity: ${(
             r.similarity * 100
           )?.toFixed(1)}%`
         );
       });
-
-      // Instructions included per recipe row as JSON array in field `instructions`
 
       const userIngredients = await AppDataSource.query(
         `
@@ -622,24 +632,6 @@ ORDER BY r.id
       const queryEndTime = Date.now();
       timeToQuery = queryEndTime - queryStartTime;
       let context = "";
-      // let context = "## Available Ingredients:\n";
-      // if (userIngredients.length > 0) {
-      //   const priorityIngredients = userIngredients
-      //     .filter((i: any) => i.is_priority)
-      //     .map((i: any) => i.name);
-      //   const otherIngredients = userIngredients
-      //     .filter((i: any) => !i.is_priority)
-      //     .map((i: any) => i.name);
-
-      //   if (priorityIngredients.length > 0) {
-      //     context += `Priority: ${priorityIngredients.join(", ")}\n`;
-      //   }
-      //   if (otherIngredients.length > 0) {
-      //     context += `Others: ${otherIngredients.join(", ")}\n`;
-      //   }
-      // } else {
-      //   context += "None specified\n";
-      // }
 
       context +=
         "\n## Most Relevant Recipes (Retrieved via Semantic Search):\n";
@@ -647,7 +639,7 @@ ORDER BY r.id
       if (similarRecipes.length > 0) {
         similarRecipes.forEach((r: any, idx: number) => {
           const total = (r.prepTime || 0) + (r.cookTime || 0);
-          const similarityPercent = (r.similarity * 100)?.toFixed(0);
+          const similarityPercent = r.similarity?.toFixed(0);
           const typeLabel =
             r.recipe_type === "owned"
               ? "(Your Recipe)"
@@ -662,6 +654,16 @@ ORDER BY r.id
           context += `   ${r.difficulty} difficulty | ${
             total ? total + " min" : "Time N/A"
           }\n`;
+
+          const ingredients = Array.isArray(r.ingredients) ? r.ingredients : [];
+          if (ingredients.length > 0) {
+            context += `   Ingredients:\n`;
+            ingredients.forEach((ing: any) => {
+              const amount = ing.amount ? `${ing.amount} ` : "";
+              const unit = ing.unit ? `${ing.unit} ` : "";
+              context += `     - ${amount}${unit}${ing.name}\n`;
+            });
+          }
 
           const steps = Array.isArray(r.instructions) ? r.instructions : [];
           if (steps.length > 0) {
@@ -710,48 +712,10 @@ Your job is to help users with recipes, ingredients, and cooking tips based only
 ${context}
 
 💡 Always choose responses from the recipes above. Do not create or name any new recipe yourself.`
-          : `You are **Sulten**, a friendly and creative cooking assistant.
+          : NO_RECIPES_FOUND_MESSAGE + "${message}";
 
-I couldn’t find any exact matches for the user’s request in our recipe collection.  
-In this case, you may create a **custom helpful recipe** suggestion based on the user’s message.
-
-### 🎯 Your Behavior
-- Be friendly, encouraging, and approachable.
-- Suggest a recipe idea based on the ingredients or topic mentioned by the user.
-- Include a short description of the dish, a possible ingredient list, and simple instructions.
-- Keep the tone conversational — like explaining to a friend.
-
-### ✨ Formatting Rules
-- Use **Markdown** formatting.
-- Recipe name should be **bold**.
-- Use bullet points (–) for ingredients.
-- Use numbered steps (1. 2. 3.) for instructions.
-- End with a short encouraging note or tip.
-
-### 🧾 Example Format
-**Thai Coconut Curry**
-
-**Ingredients**
-- Coconut milk  
-- Garlic chives  
-- Yellow onion  
-- Carrot  
-
-**Instructions**
-1. Heat oil in a pan.  
-2. Add onions and cook until soft.  
-3. Stir in coconut milk and spices.  
-4. Simmer until creamy and fragrant.
-
-> 💡 *Tip: Add tofu or paneer for extra protein.*
-
-Since no matches were found, create a helpful suggestion based on the user’s request:
-"${message}"`;
-
-      // Use Gemini for response generation with conversation context
       const conversationHistory = await lc.getPreviousMessages(userUid);
 
-      // Build conversation context for Gemini
       let conversationContext = "";
       if (conversationHistory.length > 0) {
         conversationContext = "\n\n## Previous Conversation:\n";
@@ -802,10 +766,9 @@ Since no matches were found, create a helpful suggestion based on the user’s r
           conversationContext,
           embeddingGenerated: true,
           userIngredients,
-          calculationMethod: "RAG Semantic search",
-          likedTop2,
-          ownedTop3,
-          globalTop5,
+          calculationMethod: "Milvus Vector Search + PostgreSQL Details",
+          milvusResults: similarRecipesFromMilvus.length,
+          recipesFromDB: recipes.length,
           systemPrompt,
           time: {
             timeToCheckTopic: timeToCheckTopic / 1000,
@@ -817,8 +780,9 @@ Since no matches were found, create a helpful suggestion based on the user’s r
           topRelevantRecipes: similarRecipes.map((r: any) => ({
             name: r.recipe_name,
             type: r.recipe_type,
-            similarity: `${(r.similarity * 100)?.toFixed(1)}%`,
+            similarity: `${r.similarity?.toFixed(1)}%`,
           })),
+          similarRecipesFromMilvus,
         },
       });
     } catch (error) {

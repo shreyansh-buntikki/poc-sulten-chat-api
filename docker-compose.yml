@@ -43,6 +43,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       AI_KEY: ${AI_KEY}
       GROQ_API_KEY: ${GROQ_API_KEY}
+      MILVUS_EP: ${MILVUS_EP}
+      MILVUS_TOKEN: ${MILVUS_TOKEN}
     ports:
       - "${PORT}:${PORT}"
     extra_hosts:

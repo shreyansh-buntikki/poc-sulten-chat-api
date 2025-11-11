@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import { AppDataSource } from "./db";
 import mainRouter from "./routes";
+import { MilvusService } from "./services/milvus.service";
 
 dotenv.config();
 
@@ -25,6 +26,8 @@ app.use(
 
 app.use(express.json());
 
+const milvusService = new MilvusService();
+milvusService.createCollection();
 AppDataSource.initialize()
   .then(() => {
     console.log("Database connected successfully");

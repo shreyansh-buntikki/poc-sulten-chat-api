@@ -6,7 +6,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node dist/server.js",
     "dev": "nodemon --watch 'src/**/*.ts' --exec 'ts-node' src/server.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "migrate:embeddings": "ts-node src/scripts/migrate-embeddings.ts"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +17,7 @@
     "@google/generative-ai": "^0.24.1",
     "@langchain/community": "^0.3.57",
     "@langchain/core": "^0.3.78",
+    "@zilliz/milvus2-sdk-node": "^2.6.4",
     "axios": "^1.12.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",

@@ -9,8 +9,9 @@ export class LlmService {
 
   constructor() {
     this.genAI = new GoogleGenerativeAI(process.env.AI_KEY!);
+    const modelName = process.env.GEMINI_MODEL || "gemini-1.5-pro";
     this.chatModel = this.genAI.getGenerativeModel({
-      model: "gemini-2.0-flash",
+      model: modelName,
     });
     this.groq = new Groq({
       apiKey: process.env.GROQ_API_KEY,

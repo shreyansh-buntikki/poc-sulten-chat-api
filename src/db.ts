@@ -1,8 +1,16 @@
 import "reflect-metadata";
 import { DataSource } from "typeorm";
 import dotenv from "dotenv";
+import path from "path";
 
 dotenv.config();
+
+// Determine if we're running compiled JS or TypeScript
+const isProduction =
+  process.env.NODE_ENV === "production" || __dirname.includes("dist");
+const entitiesPath = isProduction
+  ? path.join(__dirname, "entities/entities/*.js")
+  : path.join(__dirname, "entities/entities/*.ts");
 
 export const AppDataSource = new DataSource({
   type: "postgres",
@@ -12,9 +20,9 @@ export const AppDataSource = new DataSource({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   synchronize: false,
-  logging: true,
-  entities: ["src/entities/entities/*.{ts,js}"],
-  migrations: ["src/migrations/**/*{.ts,.js}"],
-  subscribers: ["src/subscribers/**/*{.ts,.js}"],
+  logging: process.env.NODE_ENV !== "production",
+  entities: [entitiesPath],
+  migrations: [],
+  subscribers: [],
   ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
 });

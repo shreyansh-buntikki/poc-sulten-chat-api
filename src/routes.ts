@@ -1,7 +1,39 @@
 import { Router } from "express";
 import { UserController } from "./controller.ts/user.controller";
+import { AppDataSource } from "./db";
 
 const mainRouter = Router();
+
+// Health check endpoint
+mainRouter.get("/health", async (req, res) => {
+  const health = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    server: "running",
+    database: "unknown",
+  };
+
+  try {
+    // Check database connection
+    if (AppDataSource.isInitialized) {
+      await AppDataSource.query("SELECT 1");
+      health.database = "connected";
+    } else {
+      health.database = "not initialized";
+      health.status = "degraded";
+    }
+  } catch (error) {
+    health.database = "disconnected";
+    health.status = "unhealthy";
+    return res.status(503).json({
+      ...health,
+      error:
+        error instanceof Error ? error.message : "Database connection failed",
+    });
+  }
+
+  res.status(200).json(health);
+});
 
 mainRouter.get("/user/search", UserController.search);
 

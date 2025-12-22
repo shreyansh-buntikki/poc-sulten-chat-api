@@ -105,7 +105,7 @@ export class MilvusService {
     try {
       const result = await this.client.insert({
         collection_name: this.collectionName,
-        data: data, 
+        data: data,
       });
 
       console.log(`Inserted ${result.insert_cnt} embeddings`);
@@ -162,42 +162,58 @@ export class MilvusService {
     intent?: SimpleIntent
   ) {
     try {
+      const hasCollection = await this.client.hasCollection({
+        collection_name: this.collectionName,
+      });
+
+      if (!hasCollection.value) {
+        return [];
+      }
+
+      // Ensure collection is loaded
+      try {
+        await this.client.loadCollection({
+          collection_name: this.collectionName,
+        });
+      } catch {
+        // It's okay if already loaded
+      }
+
       let filterExpr: string | undefined;
-  
+
       if (intent) {
         filterExpr = await this.buildMilvusFilter(intent);
       }
-  
+
       const searchParams = {
         collection_name: this.collectionName,
         data: [queryEmbedding],
         limit,
-        output_fields: ['recipe_id'],
-        anns_field: 'embedding',
-        metric_type: 'COSINE',
-        search_params: {
+        topk: limit,
+        output_fields: ["recipe_id"],
+        anns_field: "embedding",
+        metric_type: "COSINE",
+        params: {
           nprobe: 10,
           ef: 100,
         },
-        filter: filterExpr,
+        filter: filterExpr || undefined,
       };
-  
+
       const res = await this.client.search(searchParams);
-  
-      const hits = res.results?.[0] ?? res.results ?? [];
-  
+      const hits = res.results ?? [];
+
       return hits.map((hit: any) => ({
         recipe_id: hit.recipe_id,
         distance: hit.distance,
-        similarity: hit.score ?? (1 - (hit.distance ?? 0)),
+        similarity: hit.score ?? 1 - (hit.distance ?? 0),
         raw: hit,
       }));
     } catch (error) {
-      console.error('Error searching similar recipes:', error);
+      console.error("[MILVUS] Error searching:", error);
       throw error;
     }
   }
-  
 
   async updateRecipesIngredients(recipeId: string, ingredients: string[]) {
     try {

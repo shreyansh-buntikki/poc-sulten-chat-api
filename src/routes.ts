@@ -39,7 +39,13 @@ mainRouter.post(
 
 mainRouter.post("/vapi/get-recipes/:userId", UserController.getRecipes);
 
-// Agent-based recipe search endpoint
-mainRouter.post("/agent/search", UserController.searchWithAgent);
+// Agent-based recipe search endpoint (OpenAI)
+mainRouter.post("/openai/agent/search/:userId", UserController.searchWithAgent);
+
+// Agent-based recipe search endpoint (Groq)
+mainRouter.post(
+  "/groq/agent/search/:userId",
+  UserController.searchWithGroqAgent
+);
 
 export default mainRouter;

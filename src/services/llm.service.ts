@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { Groq } from "groq-sdk";
 import axios from "axios";
+import { SimpleIntent } from "./milvus.service";
 
 export class LlmService {
   private genAI: GoogleGenerativeAI;
@@ -92,5 +93,52 @@ export class LlmService {
     });
 
     return completion;
+  }
+
+  async extractIntentGroq(userMessage: string): Promise<SimpleIntent> {
+
+
+    const messages: any[] = [
+      {
+        role: "system",
+        content: `You are an intent extractor for a recipe chatbot. Your job is to analyze the user's message and output ONLY:
+  - which ingredients MUST be included (required_ingredients)
+  - which ingredients MUST be excluded (excluded_ingredients)
+  
+  Rules:
+  - Treat allergies, "no X", "without X", "don't want X" as exclusions.
+  - Treat "with X", "I have X", "using X" as required ingredients.
+  - Use only ingredient words, no cuisine names or adjectives.
+  - Normalize all ingredient names: lowercase, no accents (crème fraîche -> creme fraiche, rødløk -> rodlok).
+  - If nothing is mentioned, use empty arrays.
+  - Output MUST be valid JSON with exactly these two fields.`,
+      },
+      {
+        role: "user",
+        content: userMessage,
+      },
+    ];
+
+    const completion = await this.groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+    });
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("No content in Groq response");
+    }
+
+    try {
+      const parsed = JSON.parse(content);
+      return {
+        required_ingredients: (parsed.required_ingredients || []),
+        excluded_ingredients: (parsed.excluded_ingredients || []),
+      };
+    } catch (error) {
+      throw new Error(`Failed to parse JSON from Groq: ${content}`);
+    }
   }
 }

@@ -22,7 +22,7 @@ mainRouter.post(
   UserController.generateEmbeddingsOllama
 );
 
-mainRouter.post("/ollama/:username/chat", UserController.chatOllama);
+mainRouter.post("/ollama/:username/chat", UserController.chatAI);
 
 // Chat history endpoint
 mainRouter.get("/ollama/:username/history", UserController.getChatHistory);
@@ -36,5 +36,10 @@ mainRouter.post(
   "/ollama/genreate-embeddings/all",
   UserController.generateEmbeddingsOllamaAll
 );
+
+mainRouter.post("/vapi/get-recipes/:userId", UserController.getRecipes);
+
+// Agent-based recipe search endpoint
+mainRouter.post("/agent/search", UserController.searchWithAgent);
 
 export default mainRouter;

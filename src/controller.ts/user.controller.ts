@@ -12,6 +12,7 @@ import { LlmService } from "../services/llm.service";
 import { MilvusService } from "../services/milvus.service";
 import { NO_RECIPES_FOUND_MESSAGE } from "../constants";
 import { OllamaRAGService } from "../services/ollama-rag.service";
+import { runRecipeAgent } from "../tools/agent-runner";
 
 const ApiKey = process.env.AI_KEY;
 
@@ -425,7 +426,7 @@ ORDER BY r.id
     }
   }
 
-  static async chatOllama(req: Request, res: Response) {
+  static async chatAI(req: Request, res: Response) {
     try {
       const { username } = req.params;
       const { message, model } = req.body;
@@ -534,33 +535,6 @@ ORDER BY r.id
         error: error instanceof Error ? error.message : error,
       });
     }
-  }
-
-  private static cosineSimilarity(vecA: number[], vecB: number[]): number {
-    if (vecA.length !== vecB.length) {
-      throw new Error(
-        `Vector dimension mismatch: ${vecA.length} vs ${vecB.length}`
-      );
-    }
-
-    let dotProduct = 0;
-    let magnitudeA = 0;
-    let magnitudeB = 0;
-
-    for (let i = 0; i < vecA.length; i++) {
-      dotProduct += vecA[i] * vecB[i];
-      magnitudeA += vecA[i] * vecA[i];
-      magnitudeB += vecB[i] * vecB[i];
-    }
-
-    magnitudeA = Math.sqrt(magnitudeA);
-    magnitudeB = Math.sqrt(magnitudeB);
-
-    if (magnitudeA === 0 || magnitudeB === 0) {
-      return 0;
-    }
-
-    return dotProduct / (magnitudeA * magnitudeB);
   }
 
   static async generateEmbeddingsOllamaAll(req: Request, res: Response) {
@@ -676,6 +650,89 @@ ORDER BY r.id
       });
     } catch (error) {
       res.status(500).json({ message: "Internal server error", error });
+    }
+  }
+
+  static async getRecipes(req: Request, res: Response) {
+    try {
+      console.log("call received", req.params.userId);
+      const ragService = new OllamaRAGService();
+      const lc = new LangchainChatService();
+      const { query } = req.body;
+      const { userId } = req.params;
+
+      console.log({ query, userId });
+      const [ragResult, previousMessages] = await Promise.all([
+        ragService.runRAG(query, userId ?? "00DLyaukerYEGpYXYF3ALnSJc0a2"),
+        lc.getPreviousMessages(userId),
+      ]);
+
+      const recipes = ragResult.similarRecipes;
+      console.log(recipes);
+      const safeRecipesForVapi = recipes
+        .sort((a: any, b: any) => a.similarity - b.similarity)
+        .map((recipe) => {
+          return {
+            recipe_name: recipe.recipe_name,
+            description: recipe.ingress ?? "",
+            difficulty: recipe.difficulty,
+            cookTime: recipe.cookTime,
+            ingredients: recipe.ingredients?.map((ingredient: any) => {
+              return {
+                name: ingredient.name,
+                amount: ingredient.amount,
+                unit: ingredient.unit,
+                order: ingredient.order,
+              };
+            }),
+            instructions: recipe.instructions
+              ?.sort((a: any, b: any) => a.order - b.order)
+              .map((instruction: any) => instruction.description),
+          };
+        });
+      console.log(safeRecipesForVapi);
+      return res.status(200).json({
+        recipes: safeRecipesForVapi,
+        noResults: !recipes.length || recipes.length === 0,
+        previousContext: previousMessages?.map((item) => {
+          return {
+            text: item?.content ?? "",
+            role: item?._getType() === "human" ? "user" : "assistant",
+          };
+        }),
+      });
+    } catch (error) {
+      console.log(error);
+      res.status(500).json({ message: "Internal server error", error });
+    }
+  }
+
+  static async searchWithAgent(req: Request, res: Response) {
+    try {
+      const { message } = req.body;
+
+      if (!message || typeof message !== "string") {
+        return res.status(400).json({
+          message: "Bad request",
+          error: "Message is required in request body",
+        });
+      }
+
+      console.log("[Controller] Received agent search request:", message);
+
+      const result = await runRecipeAgent(message);
+
+      return res.status(200).json({
+        recipes: result.recipes,
+        noResults: result.noResults,
+        count: result.recipes.length,
+      });
+    } catch (error) {
+      console.error("[Controller] Error in searchWithAgent:", error);
+      res.status(500).json({
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }

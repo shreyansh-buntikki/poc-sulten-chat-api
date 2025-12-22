@@ -8,21 +8,66 @@ import { MilvusService } from "./services/milvus.service";
 
 dotenv.config();
 
+const devAllowAll = true;
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+const allowedOriginsEnv = process.env.CORS_ORIGIN;
 
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(",").map((o) => o.trim())
-  : true; // allow all if not specified
+let allowedOrigins: string[] | null = null;
+if (allowedOriginsEnv) {
+  allowedOrigins = allowedOriginsEnv
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+const corsOptions = {
+  origin: (
+    origin: string | undefined,
+    callback: (err: Error | null, allow?: boolean) => void
+  ) => {
+    if (!origin) return callback(null, true);
 
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+    if (devAllowAll) return callback(null, true);
+
+    if (!allowedOrigins) return callback(null, true);
+
+    if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
+
+    return callback(new Error("CORS policy: origin not allowed"), false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "Accept",
+    "Accept-Language",
+    "Origin",
+    "Referer",
+    "User-Agent",
+    "ngrok-skip-browser-warning",
+    "x-vapi-signature",
+    "x-requested-with",
+  ],
+  exposedHeaders: ["Content-Length", "X-Kuma-Revision"],
+  optionsSuccessStatus: 204,
+};
+app.use((req, res, next) => {
+  cors(corsOptions)(req, res, (err?: Error) => {
+    if (err) {
+      console.warn(
+        "CORS blocked:",
+        err.message,
+        "origin:",
+        req.header("Origin")
+      );
+      res.status(403).json({ error: "CORS blocked: origin not allowed" });
+      return;
+    }
+    next();
+  });
+});
 
 app.use(express.json());
 
@@ -44,7 +89,7 @@ AppDataSource.initialize()
     app.listen(PORT, () => {
       console.log(`Server running at http://localhost:${PORT}`);
     });
-    console.log('PID', process.pid, 'listening')
+    console.log("PID", process.pid, "listening");
   })
   .catch((error) => {
     console.error("Database connection failed:", error);

@@ -22,9 +22,6 @@ export class EmbeddingsService {
     }
   }
 
-  /**
-   * Generate embeddings for multiple texts in batch
-   */
   async generateEmbeddingsBatch(texts: string[]): Promise<number[][]> {
     try {
       const model = this.genAI.getGenerativeModel({ model: "embedding-001" });
@@ -65,9 +62,6 @@ export class EmbeddingsService {
     return dotProduct / (normA * normB);
   }
 
-  /**
-   * Prepare recipe text for embedding generation
-   */
   prepareRecipeText(recipe: {
     name: string;
     ingress?: string;

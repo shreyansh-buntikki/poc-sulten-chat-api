@@ -13,6 +13,7 @@ import { MilvusService } from "../services/milvus.service";
 import { NO_RECIPES_FOUND_MESSAGE } from "../constants";
 import { OllamaRAGService } from "../services/ollama-rag.service";
 import { runRecipeAgent } from "../tools/agent-runner";
+import { runGroqRecipeAgent } from "../tools/groq-agent-runner";
 
 const ApiKey = process.env.AI_KEY;
 
@@ -709,6 +710,7 @@ ORDER BY r.id
 
   static async searchWithAgent(req: Request, res: Response) {
     try {
+      const { userId } = req.params;
       const { message } = req.body;
 
       if (!message || typeof message !== "string") {
@@ -718,17 +720,102 @@ ORDER BY r.id
         });
       }
 
-      console.log("[Controller] Received agent search request:", message);
+      if (!userId) {
+        return res.status(400).json({
+          message: "Bad request",
+          error: "userId is required",
+        });
+      }
 
+      // Run agent search
       const result = await runRecipeAgent(message);
 
+      // Build RAGResult from agent results and use formatAIResponse
+      const ragService = new OllamaRAGService();
+      const ragResult = OllamaRAGService.buildRAGResultFromRecipes(
+        result.recipes
+      );
+
+      // Use formatAIResponse with groq model (same as chatAI)
+      const aiResponse = await ragService.formatAIResponse(
+        message,
+        userId,
+        "groq",
+        ragResult
+      );
+
       return res.status(200).json({
+        response: aiResponse.content,
         recipes: result.recipes,
         noResults: result.noResults,
         count: result.recipes.length,
+        previousMessages: aiResponse.previousMessages.map((m: any) => ({
+          role: m._getType() === "human" ? "user" : "assistant",
+          content:
+            typeof m.content === "string" ? m.content : String(m.content),
+        })),
+        provider: "openai",
       });
     } catch (error) {
       console.error("[Controller] Error in searchWithAgent:", error);
+      res.status(500).json({
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  static async searchWithGroqAgent(req: Request, res: Response) {
+    try {
+      const { userId } = req.params;
+      const { message } = req.body;
+
+      if (!message || typeof message !== "string") {
+        return res.status(400).json({
+          message: "Bad request",
+          error: "Message is required in request body",
+        });
+      }
+
+      if (!userId) {
+        return res.status(400).json({
+          message: "Bad request",
+          error: "userId is required",
+        });
+      }
+
+      // Run Groq agent search
+      const result = await runGroqRecipeAgent(message);
+
+      // Build RAGResult from agent results and use formatAIResponse
+      const ragService = new OllamaRAGService();
+      const ragResult = OllamaRAGService.buildRAGResultFromRecipes(
+        result.recipes
+      );
+
+      // Use formatAIResponse with groq model (same as chatAI)
+      const aiResponse = await ragService.formatAIResponse(
+        message,
+        userId,
+        "groq",
+        ragResult
+      );
+
+      return res.status(200).json({
+        response: aiResponse.content,
+        recipes: result.recipes,
+        noResults: result.noResults,
+        count: result.recipes.length,
+        toolUsed: result.toolUsed,
+        previousMessages: aiResponse.previousMessages.map((m: any) => ({
+          role: m._getType() === "human" ? "user" : "assistant",
+          content:
+            typeof m.content === "string" ? m.content : String(m.content),
+        })),
+        provider: "groq",
+      });
+    } catch (error) {
+      console.error("[Controller] Error in searchWithGroqAgent:", error);
       res.status(500).json({
         message: "Internal server error",
         error: error instanceof Error ? error.message : String(error),

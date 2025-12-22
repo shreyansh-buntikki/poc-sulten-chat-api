@@ -35,6 +35,80 @@ export class OllamaRAGService {
     this.llmService = new LlmService();
   }
 
+  /**
+   * Build context string from recipes array (reusable for agent results)
+   */
+  static buildRecipeContext(recipes: any[]): string {
+    let context =
+      "\n## Most Relevant Recipes (Retrieved via Semantic Search):\n";
+
+    if (recipes.length > 0) {
+      recipes.forEach((r: any, idx: number) => {
+        const total = (r.prepTime || 0) + (r.cookTime || 0);
+        const similarityPercent = r.similarity
+          ? (r.similarity * 100).toFixed(0)
+          : "N/A";
+        const typeLabel =
+          r.recipe_type === "owned"
+            ? "(Your Recipe)"
+            : r.recipe_type === "liked"
+            ? "(Liked)"
+            : "";
+        const recipeUrl = `https://sulten.app/en/recipes/${
+          r.slug || "no-slug"
+        }`;
+        context += `${idx + 1}. Recipe Name: "${
+          r.recipe_name
+        }" ${typeLabel} (${similarityPercent}% match)\n`;
+        context += `   URL: ${recipeUrl}\n`;
+        context += `   ${r.ingress || "No description"}\n`;
+        context += `   ${r.difficulty || "N/A"} difficulty | ${
+          total ? total + " min" : "Time N/A"
+        }\n`;
+
+        const ingredients = Array.isArray(r.ingredients) ? r.ingredients : [];
+        if (ingredients.length > 0) {
+          context += `   Ingredients:\n`;
+          ingredients.forEach((ing: any) => {
+            const amount = ing.amount ? `${ing.amount} ` : "";
+            const unit = ing.unit ? `${ing.unit} ` : "";
+            context += `     - ${amount}${unit}${ing.name}\n`;
+          });
+        }
+
+        const steps = Array.isArray(r.instructions) ? r.instructions : [];
+        if (steps.length > 0) {
+          context += `   Instructions:\n`;
+          steps.forEach((s: any, si: number) => {
+            if (s?.description) {
+              context += `     ${si + 1}. ${s.description}\n`;
+            }
+          });
+        }
+        context += `\n`;
+      });
+    } else {
+      context += "No recipes found matching your request.\n";
+    }
+
+    return context;
+  }
+
+  /**
+   * Build a RAGResult object from an array of recipes (useful for agent results)
+   */
+  static buildRAGResultFromRecipes(recipes: any[]): RAGResult {
+    return {
+      similarRecipes: recipes,
+      context: OllamaRAGService.buildRecipeContext(recipes),
+      userIngredients: [],
+      similarRecipesFromMilvus: [],
+      recipes: recipes,
+      timeToGenerateEmbedding: 0,
+      timeToQuery: 0,
+    };
+  }
+
   async runRAG(message: string, userUid: string): Promise<RAGResult> {
     let timeToQuery = 0;
     let timeToGenerateEmbedding = 0;
@@ -181,10 +255,13 @@ export class OllamaRAGService {
             : r.recipe_type === "liked"
             ? "(Liked)"
             : "";
+        const recipeUrl = `https://sulten.app/en/recipes/${
+          r.slug || "no-slug"
+        }`;
         context += `${idx + 1}. Recipe Name: "${
           r.recipe_name
         }" ${typeLabel} (${similarityPercent}% match)\n`;
-        context += `   Slug: ${r.slug || "no-slug"}\n`;
+        context += `   URL: ${recipeUrl}\n`;
         context += `   ${r.ingress || "No description"}\n`;
         context += `   ${r.difficulty} difficulty | ${
           total ? total + " min" : "Time N/A"
@@ -247,6 +324,13 @@ Your job is to help users with recipes, ingredients, and cooking tips based only
 - When explaining, speak naturally and clearly. Avoid sounding robotic or repetitive.
 - If the user seems unsure, guide them gently ("You could try…" / "A great option might be…").
 
+### 🚫 Recipe Filtering (CRITICAL)
+- ONLY recommend recipes that FULLY match the user's dietary requirements or constraints.
+- If the user specifies dietary restrictions (vegan, vegetarian, gluten-free, no dairy, etc.), carefully check the recipe ingredients.
+- DO NOT suggest a recipe and then say "just remove X ingredient" or "substitute Y" — if a recipe doesn't fit, simply don't include it.
+- If NONE of the recipes below match the user's requirements, honestly say "I couldn't find a recipe that matches your requirements" rather than suggesting unsuitable recipes with modifications.
+- Quality over quantity: it's better to recommend 1 perfect match than 5 recipes that need modifications.
+
 ### 🧾 Response Guidelines
 - When the user asks for a recipe, ingredients, or how to cook something, use the **recipes below**.
 - If a recipe includes step-by-step instructions, list them clearly using numbered steps.
@@ -255,9 +339,10 @@ Your job is to help users with recipes, ingredients, and cooking tips based only
 
 ### ✨ Formatting Rules
 - Use **Markdown** formatting.
-- Recipe names MUST be hyperlinks using the format: [**Recipe Name**](https://sulten.app/en/recipes/SLUG) and should open in new tab
-- Replace SLUG with the actual slug provided for each recipe
-- Example: If recipe name is "Thaiwrap" and slug is "thaiwrap", format as [**Thaiwrap**](https://sulten.app/en/recipes/thaiwrap)
+- Recipe names MUST be hyperlinks. Use the EXACT URL provided for each recipe - DO NOT create your own URL.
+- Format: [**Recipe Name**](EXACT_URL_FROM_RECIPE)
+- Example: If recipe shows "URL: https://sulten.app/en/recipes/thaiwrap", link as [**Thaiwrap**](https://sulten.app/en/recipes/thaiwrap)
+- NEVER modify or slugify the URL yourself - copy it exactly as provided.
 - Use bullet points (–) for lists and numbered steps (1. 2. 3.) for instructions.
 - Use > for short cooking tips or notes.
 - Do not include serving counts or irrelevant metadata.

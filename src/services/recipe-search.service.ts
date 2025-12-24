@@ -2,6 +2,9 @@ import { OllamaRAGService } from "./ollama-rag.service";
 import { LangchainChatService } from "./langchain.service";
 import { runRecipeAgent } from "../tools/agent-runner";
 import { runGroqRecipeAgent } from "../tools/groq-agent-runner";
+import { LlmService } from "./llm.service";
+import { OllamaService } from "./ollama.service";
+import { AppDataSource } from "../db";
 
 export class RecipeSearchService {
   /**
@@ -139,5 +142,127 @@ export class RecipeSearchService {
       })),
       provider: "groq",
     };
+  }
+
+  /**
+   * Get recipes metadata (macros and prices) for multiple recipes
+   */
+  static async getRecipesMeta(limit: number) {
+    try {
+      const ollamaService = new OllamaService();
+
+      // Fetch recipes with ingredients and instructions
+      const recipes = await AppDataSource.query(
+        `
+        SELECT r.id, r.name AS recipe_name,
+               (
+                 SELECT COALESCE(
+                   json_agg(
+                     json_build_object(
+                       'name', i.name,
+                       'amount', ri.amount,
+                       'unit', (
+                         SELECT mut2.name 
+                         FROM measuring_unit_translation mut2 
+                         WHERE mut2."measuringUnitId" = mu.id 
+                         LIMIT 1
+                       ),
+                       'order', ri."order"
+                     ) ORDER BY ri."order"
+                   ),
+                   '[]'::json
+                 )
+                 FROM recipe_ingredient ri
+                 INNER JOIN ingredient i ON ri."ingredientId" = i.id
+                 LEFT JOIN measuring_unit mu ON ri."unitId" = mu.id
+                 WHERE ri."recipeId" = r.id
+                   AND ri."deletedAt" IS NULL
+               ) AS ingredients,
+               (
+                 SELECT COALESCE(
+                   json_agg(
+                     json_build_object(
+                       'instruction', rin.description,
+                       'order', rin."order"
+                     ) ORDER BY rin."order"
+                   ),
+                   '[]'::json
+                 )
+                 FROM recipe_instruction rin
+                 WHERE rin."recipeId" = r.id
+                   AND rin."deletedAt" IS NULL
+               ) AS instructions
+        FROM recipe r
+        WHERE r.status = 'published'
+          AND r."deletedAt" IS NULL
+        ORDER BY r."createdAt" ASC
+        LIMIT $1
+        `,
+        [limit]
+      );
+
+      const results = [];
+
+      for (const recipe of recipes) {
+        try {
+          // Format ingredients for OllamaService
+          const formattedIngredients = (recipe.ingredients || []).map(
+            (ing: any) => {
+              const amount = ing.amount ? String(ing.amount) : "";
+              const unit = ing.unit ? String(ing.unit) : "";
+              const quantity = [amount, unit].filter(Boolean).join(" ");
+              return {
+                name: ing.name || "",
+                quantity: quantity || ing.name || "",
+              };
+            }
+          );
+
+          // Format instructions for OllamaService
+          const formattedInstructions = (recipe.instructions || []).map(
+            (inst: any) => ({
+              instruction: inst.instruction,
+              order: inst.order,
+            })
+          );
+
+          // Get metadata from Ollama
+          const metadata = await ollamaService.getRecipeMetaData({
+            recipeName: recipe.recipe_name,
+            ingredients: formattedIngredients,
+            instructions: formattedInstructions,
+          });
+
+          results.push({
+            recipeId: recipe.id,
+            recipeName: recipe.recipe_name,
+            ingredients: recipe.ingredients,
+            instructions: recipe.instructions,
+            macros: metadata.macros,
+            prices: metadata.prices,
+          });
+        } catch (error) {
+          console.error(
+            `Error processing recipe ${recipe.recipe_name}:`,
+            error
+          );
+          // Continue with other recipes even if one fails
+          results.push({
+            recipeId: recipe.id,
+            recipeName: recipe.recipe_name,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      return {
+        success: true,
+        processed: results.length,
+        recipes: results,
+      };
+    } catch (error) {
+      console.error("[RecipeSearchService] Error in getRecipesMeta:", error);
+      throw error;
+    }
   }
 }

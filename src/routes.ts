@@ -80,4 +80,6 @@ mainRouter.post(
   UserController.searchWithGroqAgent
 );
 
+mainRouter.post("/ollama/recipes/meta", UserController.generateRecipesMeta);
+
 export default mainRouter;

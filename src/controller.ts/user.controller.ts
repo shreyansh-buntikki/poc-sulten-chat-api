@@ -181,6 +181,20 @@ export class UserController {
     }
   }
 
+  static async generateRecipesMeta(req: Request, res: Response) {
+    try {
+      const limit = Number(req.body.limit ?? 0) || 10;
+      const result = await RecipeSearchService.getRecipesMeta(limit);
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("[Controller] Error in generateRecipesMeta:", error);
+      res.status(500).json({
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   static async searchWithAgent(req: Request, res: Response) {
     try {
       const { userId } = req.params;

@@ -71,8 +71,20 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// Initialize Milvus asynchronously (non-blocking)
 const milvusService = new MilvusService();
-milvusService.createCollection();
+milvusService
+  .createCollection()
+  .then(() => {
+    console.log("Milvus collection initialized successfully");
+  })
+  .catch((error) => {
+    console.warn(
+      "Milvus initialization failed (server will continue without Milvus):",
+      error.message || error
+    );
+  });
+
 AppDataSource.initialize()
   .then(() => {
     console.log("Database connected successfully");

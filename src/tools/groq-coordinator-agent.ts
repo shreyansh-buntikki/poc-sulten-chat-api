@@ -5,31 +5,54 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 // Coordinator system prompt - same as OpenAI version
 const COORDINATOR_SYSTEM_PROMPT = `
-You are Sulten, a cooking assistant. Your job is to find recipes from the database.
+### IDENTITY
+You are **Sulten**, a specialized culinary AI assistant. Your sole purpose is to help users find recipes, plan meals, and provide cooking advice based on available data.
 
-Rules:
-- If the user mentions allergies, strict exclusions, or exact constraints (time, difficulty), use sql_search.
-- If the user is vague or mood-based ("something cozy", "light and fresh"), use rag_search.
-- If both constraints and mood are present, use hybrid_search.
+### SCOPE & GUARDRAILS
+1. **Culinary Focus Only**: You are strictly limited to the domain of cooking, food, and recipes. 
+2. **General Knowledge Refusal**: You MUST NOT answer questions about general knowledge.
+3. **No Hallucinations**: NEVER invent recipe information. All data MUST come from tool outputs.
+4. **Safety First**: Strictly honor ingredient exclusions and preferences.
 
-Always return recipe names and descriptions. Do not invent recipes.
+### TOOL SELECTION LOGIC (CRITICAL)
+- **NO TOOL**: If the user is being conversational, giving feedback (e.g., "nice dishes", "thanks"), or asking a follow-up about already provided recipes without new constraints.
+- **sql_search**: Use if the query involves **including** or **excluding** specific ingredients. This is for hard ingredient constraints.
+- **hybrid_search**: Use if the query involves **time-based** (e.g., "under 30 mins") or **season-based/mood-based** (e.g., "cozy", "Christmas", "summer") constraints.
+- **rag_search**: Use for general semantic searches that don't fit the above categories.
+
+### STRICT TYPE COMPLIANCE
+1. **Arrays**: ANY parameter described as a list (like included_ingredients) MUST be a JSON array (e.g., ["fish"]), NEVER a raw string (e.g., "fish").
+2. **Numbers**: ANY parameter described as a number (like max_time_minutes) MUST be a JSON number (e.g., 30), NEVER a string (e.g., "30").
+3. **Omittance**: If you do not have a specific value for an optional parameter, DO NOT include it in the tool call at all. Do not send empty strings or nulls.
+
+### TOOL SELECTION LOGIC (STRICT)
+- **NO TOOL**: Use this for conversational filler, greetings, or "Nice" / "Thanks" comments.
+- **sql_search**: Use ONLY if the user specifies mandatory ingredients to **include** or **exclude**.
+- **hybrid_search**: Use for **time-based** (e.g., "fast", "30 mins") or **mood-based** (e.g., "simple", "cozy", "summer") queries.
+- **rag_search**: Use for broad semantic searches.
+
+### CRITICAL RULES
+1. **Tool-First Results**: EVERY recipe you mention MUST come from a tool output. 
+2. **No Hallucinations**: NEVER invent recipe names or instructions. If tools return nothing, politely state you couldn't find anything in the database.
+3. **Parameter Mapping**: map "must have X" to included_ingredients (AS AN ARRAY) and "no X" to excluded_ingredients (AS AN ARRAY).
 `;
 
-// Groq-compatible tool definitions - minimal to avoid empty string issues
+// Groq-compatible tool definitions
 const groqTools: Groq.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
       name: "rag_search",
-      description:
-        "Search recipes semantically. Use for general recipe queries without specific ingredient restrictions.",
+      description: "Semantic search for recipes.",
       parameters: {
         type: "object",
         properties: {
-          query: {
-            type: "string",
-            description: "What the user wants to cook",
-          },
+          query: { type: "string", description: "Semantic query" },
+          excluded_ingredients: { type: "array", items: { type: "string" }, description: "ARRAY of strings for items to avoid" },
+          included_ingredients: { type: "array", items: { type: "string" }, description: "ARRAY of strings for items required" },
+          max_time_minutes: { type: "number", description: "INTEGER number for minutes" },
+          difficulty: { type: "string", description: "easy, medium, or hard" },
+          limit: { type: "number", description: "INTEGER number of results" }
         },
         required: ["query"],
       },
@@ -39,18 +62,18 @@ const groqTools: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "sql_search",
-      description:
-        "Filter recipes by excluding specific ingredients. Use when user has allergies or doesn't have certain ingredients.",
+      description: "Exact filter for ingredients.",
       parameters: {
         type: "object",
         properties: {
-          excluded_ingredients: {
-            type: "array",
-            items: { type: "string" },
-            description: "Ingredients to exclude from recipes",
-          },
+          excluded_ingredients: { type: "array", items: { type: "string" }, description: "MUST BE AN ARRAY (e.g. ['pork'])" },
+          included_ingredients: { type: "array", items: { type: "string" }, description: "MUST BE AN ARRAY (e.g. ['fish'])" },
+          max_time_minutes: { type: "number", description: "MUST BE A NUMBER (e.g. 30)" },
+          difficulty: { type: "string", description: "Exact difficulty level" },
+          cuisine: { type: "string", description: "Cuisine name" },
+          limit: { type: "number", description: "Number of results" }
         },
-        required: ["excluded_ingredients"],
+        required: [],
       },
     },
   },
@@ -58,22 +81,19 @@ const groqTools: Groq.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "hybrid_search",
-      description:
-        "Combines semantic search with ingredient exclusions. Use when user wants something specific AND has ingredients to avoid.",
+      description: "Combines semantic mood with exclusions.",
       parameters: {
         type: "object",
         properties: {
-          query: {
-            type: "string",
-            description: "What the user wants to cook",
-          },
-          excluded_ingredients: {
-            type: "array",
-            items: { type: "string" },
-            description: "Ingredients to exclude from recipes",
-          },
+          query: { type: "string", description: "Mood/Context (e.g. 'simple', 'cozy')" },
+          excluded_ingredients: { type: "array", items: { type: "string" }, description: "MUST BE AN ARRAY" },
+          included_ingredients: { type: "array", items: { type: "string" }, description: "MUST BE AN ARRAY" },
+          max_time_minutes: { type: "number", description: "MUST BE A NUMBER" },
+          difficulty: { type: "string", description: "Difficulty level" },
+          cuisine: { type: "string", description: "Cuisine type" },
+          limit: { type: "number", description: "Number of results" }
         },
-        required: ["query", "excluded_ingredients"],
+        required: ["query"],
       },
     },
   },
@@ -130,20 +150,37 @@ export class GroqCoordinatorAgent {
     return sanitized;
   }
 
-  async run(userQuery: string): Promise<GroqAgentResult> {
+  async run(
+    userQuery: string,
+    history: any[] = []
+  ): Promise<GroqAgentResult> {
     try {
+      const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [
+        {
+          role: "system",
+          content: COORDINATOR_SYSTEM_PROMPT,
+        },
+      ];
+
+      // Add history if present (last 5 messages for brevity)
+      if (history.length > 0) {
+        history.slice(-5).forEach((msg) => {
+          messages.push({
+            role: msg._getType() === "human" ? "user" : "assistant",
+            content: typeof msg.content === "string" ? msg.content : String(msg.content),
+          });
+        });
+      }
+
+      // Add current query
+      messages.push({
+        role: "user",
+        content: userQuery,
+      });
+
       const response = await this.client.chat.completions.create({
         model: this.model,
-        messages: [
-          {
-            role: "system",
-            content: COORDINATOR_SYSTEM_PROMPT,
-          },
-          {
-            role: "user",
-            content: userQuery,
-          },
-        ],
+        messages,
         tools: groqTools,
         tool_choice: "auto",
         parallel_tool_calls: false,

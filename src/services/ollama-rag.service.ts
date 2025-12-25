@@ -52,19 +52,16 @@ export class OllamaRAGService {
           r.recipe_type === "owned"
             ? "(Your Recipe)"
             : r.recipe_type === "liked"
-            ? "(Liked)"
-            : "";
-        const recipeUrl = `https://sulten.app/en/recipes/${
-          r.slug || "no-slug"
-        }`;
-        context += `${idx + 1}. Recipe Name: "${
-          r.recipe_name
-        }" ${typeLabel} (${similarityPercent}% match)\n`;
+              ? "(Liked)"
+              : "";
+        const recipeUrl = `https://sulten.app/en/recipes/${r.slug || "no-slug"
+          }`;
+        context += `${idx + 1}. Recipe Name: "${r.recipe_name
+          }" ${typeLabel} (${similarityPercent}% match)\n`;
         context += `   URL: ${recipeUrl}\n`;
         context += `   ${r.ingress || "No description"}\n`;
-        context += `   ${r.difficulty || "N/A"} difficulty | ${
-          total ? total + " min" : "Time N/A"
-        }\n`;
+        context += `   ${r.difficulty || "N/A"} difficulty | ${total ? total + " min" : "Time N/A"
+          }\n`;
 
         const ingredients = Array.isArray(r.ingredients) ? r.ingredients : [];
         if (ingredients.length > 0) {
@@ -253,19 +250,16 @@ export class OllamaRAGService {
           r.recipe_type === "owned"
             ? "(Your Recipe)"
             : r.recipe_type === "liked"
-            ? "(Liked)"
-            : "";
-        const recipeUrl = `https://sulten.app/en/recipes/${
-          r.slug || "no-slug"
-        }`;
-        context += `${idx + 1}. Recipe Name: "${
-          r.recipe_name
-        }" ${typeLabel} (${similarityPercent}% match)\n`;
+              ? "(Liked)"
+              : "";
+        const recipeUrl = `https://sulten.app/en/recipes/${r.slug || "no-slug"
+          }`;
+        context += `${idx + 1}. Recipe Name: "${r.recipe_name
+          }" ${typeLabel} (${similarityPercent}% match)\n`;
         context += `   URL: ${recipeUrl}\n`;
         context += `   ${r.ingress || "No description"}\n`;
-        context += `   ${r.difficulty} difficulty | ${
-          total ? total + " min" : "Time N/A"
-        }\n`;
+        context += `   ${r.difficulty} difficulty | ${total ? total + " min" : "Time N/A"
+          }\n`;
 
         const ingredients = Array.isArray(r.ingredients) ? r.ingredients : [];
         if (ingredients.length > 0) {
@@ -351,7 +345,15 @@ Your job is to help users with recipes, ingredients, and cooking tips based only
 ${ragResult.context}
 
 💡 Always choose responses from the recipes above. Do not create or name any new recipe yourself.`
-        : NO_RECIPES_FOUND_MESSAGE + "${message}";
+        : `You are **Sulten**, a friendly cooking assistant. 
+The user is either chatting with you or asking for something I couldn't find in my database.
+
+### 🛑 CRITICAL RULES
+1. **NO HALLUCINATIONS**: If the user asks for a recipe and I didn't provide any in the retrieved context, you MUST politely explain that you couldn't find any matching recipes in your database.
+2. **DO NOT INVENT**: Never search your internal training data for recipes. If it's not in the context, it doesn't exist for this conversation.
+3. **Conversational Feedback**: If they are just saying "thanks" or "nice", acknowledge it warmly and ask if they need anything else. 
+
+Be honest, be helpful, but NEVER make up recipe details.`;
 
     const lc = new LangchainChatService();
     const conversationHistory = await lc.getPreviousMessages(userUid);

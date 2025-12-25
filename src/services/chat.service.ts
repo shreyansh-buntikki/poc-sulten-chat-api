@@ -80,7 +80,7 @@ export class ChatService {
     if (ragResult.similarRecipesFromMilvus.length === 0) {
       const response = await llmService.chat(
         "",
-        NO_RECIPES_FOUND_MESSAGE + "${message}",
+        "${message}",
         []
       );
       return {

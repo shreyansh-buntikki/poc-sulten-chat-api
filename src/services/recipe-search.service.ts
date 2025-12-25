@@ -29,7 +29,8 @@ export class RecipeSearchService {
         console.log(
           "[RecipeSearchService] Ollama unavailable, falling back to agent search"
         );
-        const result = await runGroqRecipeAgent(query);
+        const previousMessages = await lc.getPreviousMessages(userId);
+        const result = await runGroqRecipeAgent(query, undefined, previousMessages);
         recipes = result.recipes || [];
       } else {
         throw error;
@@ -110,8 +111,11 @@ export class RecipeSearchService {
    * Search recipes using Groq agent
    */
   static async searchWithGroqAgent(message: string, userId: string) {
+    const lc = new LangchainChatService();
+    const history = await lc.getPreviousMessages(userId);
+
     // Run Groq agent search
-    const result = await runGroqRecipeAgent(message);
+    const result = await runGroqRecipeAgent(message, undefined, history);
 
     // Build RAGResult from agent results and use formatAIResponse
     const ragService = new OllamaRAGService();

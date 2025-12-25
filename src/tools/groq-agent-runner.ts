@@ -15,7 +15,8 @@ import {
  */
 export async function runGroqRecipeAgent(
   userQuery: string,
-  model?: string
+  model?: string,
+  history: any[] = []
 ): Promise<{
   recipes: any[];
   noResults: boolean;
@@ -23,7 +24,7 @@ export async function runGroqRecipeAgent(
 }> {
   try {
     const agent = new GroqCoordinatorAgent(model);
-    const result: GroqAgentResult = await agent.run(userQuery);
+    const result: GroqAgentResult = await agent.run(userQuery, history);
 
     return {
       recipes: result.recipes || [],

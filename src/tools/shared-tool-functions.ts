@@ -28,6 +28,27 @@ function hasExcludedIngredient(
 }
 
 /**
+ * Helper function to check if all ingredients in includedTerms are present (partial match)
+ * Returns true if recipe should be INCLUDED (has all matching ingredients)
+ */
+function hasAllIncludedIngredients(
+  ingredients: Array<{ name: string }>,
+  includedTerms: string[]
+): boolean {
+  if (!includedTerms || includedTerms.length === 0) return true;
+  if (!ingredients || ingredients.length === 0) return false;
+
+  const normalizedIngredients = ingredients.map((i) => i.name?.toLowerCase() || "");
+
+  for (const term of includedTerms) {
+    const lowerTerm = term.toLowerCase().trim();
+    const found = normalizedIngredients.some((name) => name.includes(lowerTerm));
+    if (!found) return false;
+  }
+  return true;
+}
+
+/**
  * Build SQL condition for excluding ingredients using ILIKE (partial match)
  */
 function buildExcludedIngredientsCondition(
@@ -65,6 +86,44 @@ function buildExcludedIngredientsCondition(
   };
 }
 
+/**
+ * Build SQL condition for including ingredients using ILIKE (partial match)
+ * Ensures ALL specified ingredients are present in the recipe.
+ */
+function buildIncludedIngredientsCondition(
+  includedIngredients: string[],
+  startParamIndex: number
+): { condition: string; params: string[]; nextParamIndex: number } {
+  if (!includedIngredients || includedIngredients.length === 0) {
+    return { condition: "", params: [], nextParamIndex: startParamIndex };
+  }
+
+  const conditions: string[] = [];
+  const params: string[] = [];
+
+  for (let i = 0; i < includedIngredients.length; i++) {
+    const paramIdx = startParamIndex + i;
+    // For each included ingredient, we ensure it exists in the recipe
+    conditions.push(`
+      EXISTS (
+        SELECT 1
+        FROM recipe_ingredient ri
+        INNER JOIN ingredient i ON ri."ingredientId" = i.id
+        WHERE ri."recipeId" = r.id
+          AND ri."deletedAt" IS NULL
+          AND LOWER(i.name) ILIKE $${paramIdx}
+      )
+    `);
+    params.push(`%${includedIngredients[i].toLowerCase().trim()}%`);
+  }
+
+  return {
+    condition: conditions.join(" AND "),
+    params,
+    nextParamIndex: startParamIndex + includedIngredients.length,
+  };
+}
+
 export interface RAGSearchArgs {
   query: string;
   excluded_ingredients?: string[];
@@ -76,6 +135,7 @@ export interface RAGSearchArgs {
 }
 
 export interface SqlSearchArgs {
+  included_ingredients?: string[];
   excluded_ingredients?: string[];
   max_time_minutes?: number;
   difficulty?: string;
@@ -86,6 +146,7 @@ export interface SqlSearchArgs {
 export interface HybridSearchArgs {
   query: string;
   excluded_ingredients?: string[];
+  included_ingredients?: string[];
   max_time_minutes?: number;
   difficulty?: string;
   cuisine?: string;
@@ -210,6 +271,12 @@ export const toolDefinitions = {
           description:
             "List of ingredients to exclude (e.g., ['chicken', 'nuts']). Recipes containing ANY of these will be excluded.",
         },
+        included_ingredients: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description:
+            "Optional: List of ingredients that must be present in recipes.",
+        },
         max_time_minutes: {
           type: "number" as const,
           description:
@@ -250,6 +317,12 @@ export const toolDefinitions = {
           items: { type: "string" as const },
           description:
             "Hard constraint: List of ingredients to exclude (e.g., ['chicken', 'nuts']). Recipes containing ANY of these will be excluded.",
+        },
+        included_ingredients: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description:
+            "Hard constraint: List of ingredients that must be present in recipes.",
         },
         max_time_minutes: {
           type: "number" as const,
@@ -381,16 +454,15 @@ export async function executeRAGSearch(
                LEFT JOIN measuring_unit mu ON ri."unitId" = mu.id
                WHERE ri."recipeId" = r.id
              ) AS ingredients,
-             ${
-               args.userUid
-                 ? `EXISTS (
+             ${args.userUid
+        ? `EXISTS (
                SELECT 1 FROM "like" lk
                WHERE lk."userUid" = $${userUidParamIndex}
                  AND lower(trim(lk."entityType")) = 'recipe'
                  AND trim(lk."entityId") = r.id::text
              ) AS is_liked`
-                 : `false AS is_liked`
-             }
+        : `false AS is_liked`
+      }
       FROM recipe r
       WHERE ${whereClause}
       LIMIT $${paramIndex}
@@ -416,6 +488,18 @@ export async function executeRAGSearch(
           args.excluded_ingredients &&
           args.excluded_ingredients.length > 0 &&
           hasExcludedIngredient(recipe.ingredients, args.excluded_ingredients)
+        ) {
+          return null;
+        }
+
+        // Post-filter: Skip recipes with missing included ingredients (partial match)
+        if (
+          args.included_ingredients &&
+          args.included_ingredients.length > 0 &&
+          !hasAllIncludedIngredients(
+            recipe.ingredients,
+            args.included_ingredients
+          )
         ) {
           return null;
         }
@@ -454,6 +538,19 @@ export async function executeRAGSearch(
       recipes: recipesWithSimilarity,
       count: recipesWithSimilarity.length,
       message: `Found ${recipesWithSimilarity.length} recipe(s) matching your query`,
+      filters_applied: {
+        query: args.query,
+        excluded_ingredients:
+          args.excluded_ingredients && args.excluded_ingredients.length > 0
+            ? args.excluded_ingredients
+            : undefined,
+        included_ingredients:
+          args.included_ingredients && args.included_ingredients.length > 0
+            ? args.included_ingredients
+            : undefined,
+        max_time_minutes: args.max_time_minutes || undefined,
+        difficulty: args.difficulty || undefined,
+      },
     };
   } catch (error) {
     console.error("[rag_search] Error:", error);
@@ -474,6 +571,7 @@ export async function executeSQLSearch(
   try {
     const {
       excluded_ingredients = [],
+      included_ingredients = [],
       max_time_minutes,
       difficulty,
       cuisine,
@@ -498,6 +596,19 @@ export async function executeSQLSearch(
         conditions.push(excludeResult.condition);
         queryParams.push(...excludeResult.params);
         paramIndex = excludeResult.nextParamIndex;
+      }
+    }
+
+    // Use ILIKE for partial matching of included ingredients
+    if (included_ingredients && included_ingredients.length > 0) {
+      const includeResult = buildIncludedIngredientsCondition(
+        included_ingredients,
+        paramIndex
+      );
+      if (includeResult.condition) {
+        conditions.push(includeResult.condition);
+        queryParams.push(...includeResult.params);
+        paramIndex = includeResult.nextParamIndex;
       }
     }
 
@@ -601,6 +712,8 @@ export async function executeSQLSearch(
       filters_applied: {
         excluded_ingredients:
           excluded_ingredients.length > 0 ? excluded_ingredients : undefined,
+        included_ingredients:
+          included_ingredients.length > 0 ? included_ingredients : undefined,
         max_time_minutes: max_time_minutes || undefined,
         difficulty: difficulty || undefined,
         cuisine: cuisine || undefined,
@@ -626,6 +739,7 @@ export async function executeHybridSearch(
     const {
       query,
       excluded_ingredients = [],
+      included_ingredients = [],
       max_time_minutes,
       difficulty,
       cuisine,
@@ -798,6 +912,21 @@ export async function executeHybridSearch(
           return null;
         }
 
+        // Post-filter: Skip recipes with missing included ingredients (partial match)
+        if (
+          included_ingredients &&
+          included_ingredients.length > 0 &&
+          !hasAllIncludedIngredients(recipe.ingredients, included_ingredients)
+        ) {
+          filteredOutCount++;
+          console.log(
+            "[HybridSearch] Filtered out recipe:",
+            recipe.recipe_name,
+            "- missing included ingredient"
+          );
+          return null;
+        }
+
         return {
           id: recipe.id,
           recipe_name: recipe.recipe_name,
@@ -836,6 +965,8 @@ export async function executeHybridSearch(
         semantic_query: query,
         excluded_ingredients:
           excluded_ingredients.length > 0 ? excluded_ingredients : undefined,
+        included_ingredients:
+          included_ingredients.length > 0 ? included_ingredients : undefined,
         max_time_minutes: max_time_minutes || undefined,
         difficulty: difficulty || undefined,
         cuisine: cuisine || undefined,

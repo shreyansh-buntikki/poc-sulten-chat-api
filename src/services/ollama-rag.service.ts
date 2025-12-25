@@ -381,6 +381,24 @@ Be honest, be helpful, but NEVER make up recipe details.`;
         conversationHistory
       );
       content = completion.choices?.[0]?.message?.content ?? "";
+    } else if (model === "openai") {
+      console.log("Using OpenAI (GPT-4o)");
+      completion = await this.llmService.chatOpenAI(
+        systemPrompt,
+        message,
+        conversationHistory,
+        "gpt-4o"
+      );
+      content = completion.choices?.[0]?.message?.content ?? "";
+    } else if (model === "openai-mini") {
+      console.log("Using OpenAI (GPT-4.1-mini)");
+      completion = await this.llmService.chatOpenAI(
+        systemPrompt,
+        message,
+        conversationHistory,
+        "gpt-4.1-mini"
+      );
+      content = completion.choices?.[0]?.message?.content ?? "";
     } else if (model === "gemini") {
       content = await this.llmService.chat(
         systemPrompt,

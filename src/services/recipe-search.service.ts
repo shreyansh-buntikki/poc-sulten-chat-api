@@ -30,7 +30,7 @@ export class RecipeSearchService {
           "[RecipeSearchService] Ollama unavailable, falling back to agent search"
         );
         const previousMessages = await lc.getPreviousMessages(userId);
-        const result = await runGroqRecipeAgent(query, undefined, previousMessages);
+        const result = await runRecipeAgent(query, previousMessages);
         recipes = result.recipes || [];
       } else {
         throw error;
@@ -77,8 +77,11 @@ export class RecipeSearchService {
    * Search recipes using OpenAI agent
    */
   static async searchWithOpenAIAgent(message: string, userId: string) {
+    const lc = new LangchainChatService();
+    const previousMessagesFromDb = await lc.getPreviousMessages(userId);
+
     // Run agent search
-    const result = await runRecipeAgent(message);
+    const result = await runRecipeAgent(message, previousMessagesFromDb);
 
     // Build RAGResult from agent results and use formatAIResponse
     const ragService = new OllamaRAGService();
@@ -86,11 +89,11 @@ export class RecipeSearchService {
       result.recipes
     );
 
-    // Use formatAIResponse with groq model (same as chatAI)
+    // Use formatAIResponse with openai model
     const aiResponse = await ragService.formatAIResponse(
       message,
       userId,
-      "groq",
+      "openai",
       ragResult
     );
 
@@ -104,6 +107,43 @@ export class RecipeSearchService {
         content: typeof m.content === "string" ? m.content : String(m.content),
       })),
       provider: "openai",
+    };
+  }
+
+  /**
+   * Search recipes using OpenAI agent (Mini model)
+   */
+  static async searchWithOpenAIMiniAgent(message: string, userId: string) {
+    const lc = new LangchainChatService();
+    const previousMessagesFromDb = await lc.getPreviousMessages(userId);
+
+    // Run agent search
+    const result = await runRecipeAgent(message, previousMessagesFromDb);
+
+    // Build RAGResult from agent results and use formatAIResponse
+    const ragService = new OllamaRAGService();
+    const ragResult = OllamaRAGService.buildRAGResultFromRecipes(
+      result.recipes
+    );
+
+    // Use formatAIResponse with openai-mini model
+    const aiResponse = await ragService.formatAIResponse(
+      message,
+      userId,
+      "openai-mini",
+      ragResult
+    );
+
+    return {
+      response: aiResponse.content,
+      recipes: result.recipes,
+      noResults: result.noResults,
+      count: result.recipes.length,
+      previousMessages: aiResponse.previousMessages.map((m: any) => ({
+        role: m._getType() === "human" ? "user" : "assistant",
+        content: typeof m.content === "string" ? m.content : String(m.content),
+      })),
+      provider: "openai-mini",
     };
   }
 

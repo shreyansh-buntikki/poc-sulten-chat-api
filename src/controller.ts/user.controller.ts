@@ -215,6 +215,40 @@ export class UserController {
     }
   }
 
+  static async searchWithOpenAIMiniAgent(req: Request, res: Response) {
+    try {
+      const { userId } = req.params;
+      const { message } = req.body;
+
+      if (!message || typeof message !== "string") {
+        return res.status(400).json({
+          message: "Bad request",
+          error: "Message is required in request body",
+        });
+      }
+
+      if (!userId) {
+        return res.status(400).json({
+          message: "Bad request",
+          error: "userId is required",
+        });
+      }
+
+      const result = await RecipeSearchService.searchWithOpenAIMiniAgent(
+        message,
+        userId
+      );
+
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("[Controller] Error in searchWithOpenAIMiniAgent:", error);
+      res.status(500).json({
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   static async searchWithGroqAgent(req: Request, res: Response) {
     try {
       const { userId } = req.params;

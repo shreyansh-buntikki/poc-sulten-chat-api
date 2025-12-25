@@ -1,7 +1,10 @@
 import { run } from "@openai/agents";
 import { coordinatorAgent } from "./coordinator-agent";
 
-export async function runRecipeAgent(userQuery: string): Promise<{
+export async function runRecipeAgent(
+  userQuery: string,
+  history: any[] = []
+): Promise<{
   recipes: any[];
   noResults: boolean;
 }> {

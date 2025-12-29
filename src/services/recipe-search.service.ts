@@ -3,7 +3,6 @@ import { LangchainChatService } from "./langchain.service";
 import { runRecipeAgent } from "../tools/agent-runner";
 import { runGroqRecipeAgent } from "../tools/groq-agent-runner";
 import { LlmService } from "./llm.service";
-import { OllamaService } from "./ollama.service";
 import { AppDataSource } from "../db";
 
 export class RecipeSearchService {
@@ -74,33 +73,127 @@ export class RecipeSearchService {
       }),
     };
   }
-
-  /**
-   * Search recipes using OpenAI agent
-   */
   static async searchWithOpenAIAgent(message: string, userId: string) {
-    // Run agent search
-    const result = await runRecipeAgent(message);
+    const llmService = new LlmService();
+    const lc = new LangchainChatService();
 
-    // Build RAGResult from agent results and use formatAIResponse
-    const ragService = new OllamaRAGService();
-    const ragResult = OllamaRAGService.buildRAGResultFromRecipes(
-      result.recipes
+    const history = await lc.getPreviousMessages(userId);
+    const lastAIMessage = history
+      .filter((m: any) => m._getType() === "ai")
+      .slice(-1)[0];
+
+    const lastAIContent = lastAIMessage
+      ? typeof lastAIMessage.content === "string"
+        ? lastAIMessage.content
+        : String(lastAIMessage.content)
+      : null;
+
+    const topicCheckPrompt = lastAIContent
+      ? `You are checking if a conversation is about food/recipes/cooking.
+    
+    Previous assistant message: "${lastAIContent}"
+    User's reply: "${message}"
+    
+    Is this conversation about food, recipes, cooking, ingredients, or meal planning?
+    Reply only with "YES" if it is food-related or a continuation of the food conversation.
+    Otherwise reply only with "NO".
+    
+    Answer (YES or NO):`
+      : `Decide if the user message is about food, recipes, cooking, ingredients, or meal planning.
+    Reply only with "YES" if it is food-related.
+    Otherwise, reply only with "NO".
+    
+    Answer (YES or NO):
+    User message: "${message}"
+    `;
+
+    const topicCheckResponse = await llmService.chatOpenAI(
+      "",
+      topicCheckPrompt,
+      []
     );
+    const topicCheckResult = topicCheckResponse.choices?.[0]?.message?.content
+      ?.trim()
+      .toUpperCase();
 
-    // Use formatAIResponse with groq model (same as chatAI)
+    if (topicCheckResult !== "YES") {
+      const nonFoodResponse = await llmService.chatOpenAI(
+        "You are Sulten, a friendly cooking assistant. Politely redirect non-food related questions back to cooking topics.",
+        message,
+        history
+      );
+      return {
+        response:
+          nonFoodResponse.choices?.[0]?.message?.content ??
+          "I'm here to help with recipes and cooking! How can I assist you with food today?",
+        recipes: [],
+        noResults: true,
+        count: 0,
+        previousMessages: history.map((m: any) => ({
+          role: m._getType() === "human" ? "user" : "assistant",
+          content:
+            typeof m.content === "string" ? m.content : String(m.content),
+        })),
+        provider: "openai",
+      };
+    }
+
+    const result = await runRecipeAgent(message);
+    console.log("result from recipe agent", { result });
+
+    const ragService = new OllamaRAGService();
+    const context = OllamaRAGService.buildRecipeContext(result.recipes);
+    const ragResult = {
+      similarRecipes: result.recipes,
+      context,
+      userIngredients: [],
+      similarRecipesFromMilvus: [],
+      recipes: result.recipes,
+      timeToGenerateEmbedding: 0,
+      timeToQuery: 0,
+    };
+
     const aiResponse = await ragService.formatAIResponse(
       message,
       userId,
-      "groq",
+      "openai",
       ragResult
     );
 
+    // Format recipes with URLs for response
+    const formattedRecipes = result.recipes.map((recipe: any) => ({
+      id: recipe.id,
+      recipe_name: recipe.recipe_name,
+      slug: recipe.slug,
+      url: `https://sulten.app/en/recipes/${recipe.slug || "no-slug"}`,
+      ingress: recipe.ingress,
+      difficulty: recipe.difficulty,
+      servings: recipe.servings,
+      prepTime: recipe.prepTime,
+      cookTime: recipe.cookTime,
+      total_time: recipe.total_time,
+      instructions: recipe.instructions || [],
+      ingredients: recipe.ingredients || [],
+      similarity: recipe.similarity,
+      distance: recipe.distance,
+    }));
+
     return {
+      result: result.result,
       response: aiResponse.content,
-      recipes: result.recipes,
+      recipes: formattedRecipes,
+      originalRecipes: result.recipes, // Original recipes from tool
       noResults: result.noResults,
       count: result.recipes.length,
+      toolUsed: result.toolUsed,
+      debug: {
+        toolUsed: result.toolUsed,
+        recipesFound: result.recipes.length,
+        recipesReturned: formattedRecipes.length,
+        systemPrompt: aiResponse.systemPrompt,
+        conversationContext: aiResponse.conversationContext,
+        timeToGenerateAIResponse: aiResponse.timeToGenerateAIResponse,
+      },
       previousMessages: aiResponse.previousMessages.map((m: any) => ({
         role: m._getType() === "human" ? "user" : "assistant",
         content: typeof m.content === "string" ? m.content : String(m.content),
@@ -116,11 +209,18 @@ export class RecipeSearchService {
     // Run Groq agent search
     const result = await runGroqRecipeAgent(message);
 
-    // Build RAGResult from agent results and use formatAIResponse
+    // Build context and RAGResult for formatAIResponse
     const ragService = new OllamaRAGService();
-    const ragResult = OllamaRAGService.buildRAGResultFromRecipes(
-      result.recipes
-    );
+    const context = OllamaRAGService.buildRecipeContext(result.recipes);
+    const ragResult = {
+      similarRecipes: result.recipes,
+      context,
+      userIngredients: [],
+      similarRecipesFromMilvus: [],
+      recipes: result.recipes,
+      timeToGenerateEmbedding: 0,
+      timeToQuery: 0,
+    };
 
     // Use formatAIResponse with groq model (same as chatAI)
     const aiResponse = await ragService.formatAIResponse(
@@ -130,12 +230,39 @@ export class RecipeSearchService {
       ragResult
     );
 
+    // Format recipes with URLs for response
+    const formattedRecipes = result.recipes.map((recipe: any) => ({
+      id: recipe.id,
+      recipe_name: recipe.recipe_name,
+      slug: recipe.slug,
+      url: `https://sulten.app/en/recipes/${recipe.slug || "no-slug"}`,
+      ingress: recipe.ingress,
+      difficulty: recipe.difficulty,
+      servings: recipe.servings,
+      prepTime: recipe.prepTime,
+      cookTime: recipe.cookTime,
+      total_time: recipe.total_time,
+      instructions: recipe.instructions || [],
+      ingredients: recipe.ingredients || [],
+      similarity: recipe.similarity,
+      distance: recipe.distance,
+    }));
+
     return {
       response: aiResponse.content,
-      recipes: result.recipes,
+      recipes: formattedRecipes,
+      originalRecipes: result.recipes, // Original recipes from tool
       noResults: result.noResults,
       count: result.recipes.length,
       toolUsed: result.toolUsed,
+      debug: {
+        toolUsed: result.toolUsed,
+        recipesFound: result.recipes.length,
+        recipesReturned: formattedRecipes.length,
+        systemPrompt: aiResponse.systemPrompt,
+        conversationContext: aiResponse.conversationContext,
+        timeToGenerateAIResponse: aiResponse.timeToGenerateAIResponse,
+      },
       previousMessages: aiResponse.previousMessages.map((m: any) => ({
         role: m._getType() === "human" ? "user" : "assistant",
         content: typeof m.content === "string" ? m.content : String(m.content),
@@ -149,7 +276,30 @@ export class RecipeSearchService {
    */
   static async getRecipesMeta(limit: number) {
     try {
-      const ollamaService = new OllamaService();
+      const llmService = new LlmService();
+
+      // Check if meta column exists, if not add it
+      try {
+        const columnExists = await AppDataSource.query(
+          `SELECT column_name 
+           FROM information_schema.columns 
+           WHERE table_name = 'recipe' AND column_name = 'meta'`
+        );
+
+        if (columnExists.length === 0) {
+          console.log(
+            "[RecipeSearchService] Adding meta column to recipe table..."
+          );
+          await AppDataSource.query(`ALTER TABLE recipe ADD COLUMN meta TEXT`);
+          console.log("[RecipeSearchService] Meta column added successfully");
+        }
+      } catch (error) {
+        console.error(
+          "[RecipeSearchService] Error checking/adding meta column:",
+          error
+        );
+        // Continue anyway - column might already exist or there's a permission issue
+      }
 
       // Fetch recipes with ingredients and instructions
       const recipes = await AppDataSource.query(
@@ -202,10 +352,15 @@ export class RecipeSearchService {
       );
 
       const results = [];
+      let totalTokens = {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+      };
 
       for (const recipe of recipes) {
         try {
-          // Format ingredients for OllamaService
+          // Format ingredients for LlmService
           const formattedIngredients = (recipe.ingredients || []).map(
             (ing: any) => {
               const amount = ing.amount ? String(ing.amount) : "";
@@ -214,11 +369,12 @@ export class RecipeSearchService {
               return {
                 name: ing.name || "",
                 quantity: quantity || ing.name || "",
+                unit: unit || "",
               };
             }
           );
 
-          // Format instructions for OllamaService
+          // Format instructions for LlmService
           const formattedInstructions = (recipe.instructions || []).map(
             (inst: any) => ({
               instruction: inst.instruction,
@@ -226,12 +382,29 @@ export class RecipeSearchService {
             })
           );
 
-          // Get metadata from Ollama
-          const metadata = await ollamaService.getRecipeMetaData({
+          // Get metadata from ChatGPT API
+          const metadata = await llmService.getRecipeMetaData({
             recipeName: recipe.recipe_name,
             ingredients: formattedIngredients,
             instructions: formattedInstructions,
           });
+
+          // Accumulate token usage
+          totalTokens.prompt_tokens += metadata.tokens.prompt_tokens;
+          totalTokens.completion_tokens += metadata.tokens.completion_tokens;
+          totalTokens.total_tokens += metadata.tokens.total_tokens;
+
+          // Stringify metadata and save to database
+          const metaString = JSON.stringify({
+            macros: metadata.macros,
+            prices: metadata.prices,
+          });
+
+          // Update the recipe with metadata
+          await AppDataSource.query(
+            `UPDATE recipe SET meta = $1 WHERE id = $2`,
+            [metaString, recipe.id]
+          );
 
           results.push({
             recipeId: recipe.id,
@@ -259,6 +432,7 @@ export class RecipeSearchService {
         success: true,
         processed: results.length,
         recipes: results,
+        tokens: totalTokens,
       };
     } catch (error) {
       console.error("[RecipeSearchService] Error in getRecipesMeta:", error);

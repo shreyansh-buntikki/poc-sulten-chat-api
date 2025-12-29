@@ -12,7 +12,7 @@ export class RecipeIngredient {
   })
   id: string;
 
-  @Column("double precision", { name: "amount", nullable: true, precision: 53 })
+  @Column("double precision", { name: "amount", nullable: true })
   amount: number | null;
 
   @Column("character varying", { name: "section", nullable: true })

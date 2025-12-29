@@ -94,21 +94,6 @@ export class OllamaRAGService {
     return context;
   }
 
-  /**
-   * Build a RAGResult object from an array of recipes (useful for agent results)
-   */
-  static buildRAGResultFromRecipes(recipes: any[]): RAGResult {
-    return {
-      similarRecipes: recipes,
-      context: OllamaRAGService.buildRecipeContext(recipes),
-      userIngredients: [],
-      similarRecipesFromMilvus: [],
-      recipes: recipes,
-      timeToGenerateEmbedding: 0,
-      timeToQuery: 0,
-    };
-  }
-
   async runRAG(message: string, userUid: string): Promise<RAGResult> {
     let timeToQuery = 0;
     let timeToGenerateEmbedding = 0;
@@ -329,7 +314,13 @@ Your job is to help users with recipes, ingredients, and cooking tips based only
 - If the user specifies dietary restrictions (vegan, vegetarian, gluten-free, no dairy, etc.), carefully check the recipe ingredients.
 - DO NOT suggest a recipe and then say "just remove X ingredient" or "substitute Y" — if a recipe doesn't fit, simply don't include it.
 - If NONE of the recipes below match the user's requirements, honestly say "I couldn't find a recipe that matches your requirements" rather than suggesting unsuitable recipes with modifications.
-- Quality over quantity: it's better to recommend 1 perfect match than 5 recipes that need modifications.
+
+### 📋 Recipe Recommendation Rules (IMPORTANT)
+- **ALWAYS recommend 3-4 recipes** unless the user asks for a specific recipe by name (e.g., "show me the recipe for Thaiwrap").
+- If the user asks for a specific recipe, you can recommend just that one.
+- If the user asks for "a recipe" or "something to cook" or similar general queries, recommend 3-4 recipes from the list below.
+- Prioritize recipes with higher similarity scores (they match the user's query better).
+- If you have fewer than 3 recipes available, recommend all available recipes.
 
 ### 🧾 Response Guidelines
 - When the user asks for a recipe, ingredients, or how to cook something, use the **recipes below**.
@@ -371,8 +362,6 @@ ${ragResult.context}
     let completion;
 
     if (model === "groq") {
-      console.log("Using Groq");
-
       completion = await this.llmService.chatGroq(
         systemPrompt,
         message,
@@ -385,6 +374,17 @@ ${ragResult.context}
         message,
         conversationHistory
       );
+    } else if (
+      model === "openai" ||
+      model === "gpt-4" ||
+      model === "gpt-4o-mini"
+    ) {
+      completion = await this.llmService.chatOpenAI(
+        systemPrompt,
+        message,
+        conversationHistory
+      );
+      content = completion.choices?.[0]?.message?.content ?? "";
     }
     const systemPromptEndTime = Date.now();
     timeToGenerateAIResponse = systemPromptEndTime - systemPromptStartTime;

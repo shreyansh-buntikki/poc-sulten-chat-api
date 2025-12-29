@@ -77,19 +77,25 @@ export interface RAGSearchArgs {
 
 export interface SqlSearchArgs {
   excluded_ingredients?: string[];
+  included_ingredients?: string[];
   max_time_minutes?: number;
   difficulty?: string;
   cuisine?: string;
   limit?: number;
+  price_constraints?: { min: number; max: number };
+  macronutrients?: Record<string, "high" | "low">;
 }
 
 export interface HybridSearchArgs {
   query: string;
   excluded_ingredients?: string[];
+  included_ingredients?: string[];
   max_time_minutes?: number;
   difficulty?: string;
   cuisine?: string;
   limit?: number;
+  price_constraints?: { min: number; max: number };
+  macronutrients?: Record<string, "high" | "low">;
 }
 
 interface MilvusResult {
@@ -109,6 +115,7 @@ interface RecipeRow {
   cookTime: number;
   userUid?: string;
   total_time: number;
+  meta?: string | null;
   instructions: Array<{ order: number; description: string }>;
   ingredients: Array<{
     name: string;
@@ -200,7 +207,7 @@ export const toolDefinitions = {
   sql_search: {
     name: "sql_search",
     description:
-      'Search recipes using exact SQL filters for hard constraints. Use when user has strict requirements like allergies ("no chicken"), time limits ("under 30 mins"), difficulty ("easy only"), or cuisine ("Italian"). This tool guarantees exact compliance - it never guesses or approximates.',
+      'Search recipes using exact SQL filters for hard constraints. Use when user has strict requirements like allergies ("no chicken"), time limits ("under 30 mins"), difficulty ("easy only"), cuisine ("Italian"), macronutrients ("high protein", "low calories"), or price constraints. This tool guarantees exact compliance - it never guesses or approximates. Recipes are sorted by macronutrient match score when macronutrients are specified.',
     parameters: {
       type: "object" as const,
       properties: {
@@ -209,6 +216,12 @@ export const toolDefinitions = {
           items: { type: "string" as const },
           description:
             "List of ingredients to exclude (e.g., ['chicken', 'nuts']). Recipes containing ANY of these will be excluded.",
+        },
+        included_ingredients: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description:
+            "List of ingredients that must be present in recipes (e.g., ['pork', 'beef']). Recipes must contain at least one of these.",
         },
         max_time_minutes: {
           type: "number" as const,
@@ -225,6 +238,24 @@ export const toolDefinitions = {
           description:
             "Filter by cuisine type (e.g., 'italian', 'mexican', 'asian'). Case-insensitive.",
         },
+        price_constraints: {
+          type: "object" as const,
+          properties: {
+            min: { type: "number" as const },
+            max: { type: "number" as const },
+          },
+          description:
+            "Price range filter. min and max should be in the same currency (e.g., {min: 100, max: 500} for INR/NOK/USD). Filters recipes based on their estimated price from the meta column.",
+        },
+        macronutrients: {
+          type: "object" as const,
+          additionalProperties: {
+            type: "string" as const,
+            enum: ["high", "low"],
+          },
+          description:
+            "Filter by macronutrient levels. Keys are nutrient names (e.g., 'protein', 'carbohydrates', 'fat', 'calories'). Values are 'high' or 'low'. Recipes are sorted by relevance to these constraints using their meta column data. Example: {protein: 'high', calories: 'low'}.",
+        },
         limit: {
           type: "number" as const,
           description: "Maximum number of recipes to return (default: 10)",
@@ -236,7 +267,7 @@ export const toolDefinitions = {
   hybrid_search: {
     name: "hybrid_search",
     description:
-      'Hybrid search combining semantic similarity with hard constraints. Use when user has both mood-based preferences (e.g., "cozy dinner", "comforting meal") AND hard constraints (e.g., allergies like "no chicken", time limits, difficulty). Guarantees safety (hard constraints) while maximizing relevance (semantic match). Example: "I want something cozy for dinner, but I\'m allergic to chicken" - returns chicken-free recipes ranked by how "cozy" they are.',
+      'Hybrid search combining semantic similarity with hard constraints. Use when user has both mood-based preferences (e.g., "cozy dinner", "comforting meal") AND hard constraints (e.g., allergies like "no chicken", time limits, difficulty, macronutrients, price). Guarantees safety (hard constraints) while maximizing relevance (semantic match). Example: "I want something cozy for dinner, but I\'m allergic to chicken" - returns chicken-free recipes ranked by how "cozy" they are.',
     parameters: {
       type: "object" as const,
       properties: {
@@ -250,6 +281,12 @@ export const toolDefinitions = {
           items: { type: "string" as const },
           description:
             "Hard constraint: List of ingredients to exclude (e.g., ['chicken', 'nuts']). Recipes containing ANY of these will be excluded.",
+        },
+        included_ingredients: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description:
+            "Hard constraint: List of ingredients that must be present in recipes (e.g., ['pork', 'beef']). Recipes must contain at least one of these.",
         },
         max_time_minutes: {
           type: "number" as const,
@@ -265,6 +302,24 @@ export const toolDefinitions = {
           type: "string" as const,
           description:
             "Hard constraint: Filter by cuisine type (e.g., 'italian', 'mexican', 'asian'). Case-insensitive.",
+        },
+        price_constraints: {
+          type: "object" as const,
+          properties: {
+            min: { type: "number" as const },
+            max: { type: "number" as const },
+          },
+          description:
+            "Hard constraint: Price range filter. min and max should be in the same currency (e.g., {min: 100, max: 500} for INR/NOK/USD). Filters recipes based on their estimated price.",
+        },
+        macronutrients: {
+          type: "object" as const,
+          additionalProperties: {
+            type: "string" as const,
+            enum: ["high", "low"],
+          },
+          description:
+            "Hard constraint: Filter by macronutrient levels. Keys are nutrient names (e.g., 'protein', 'carbohydrates', 'fat', 'calories'). Values are 'high' or 'low'. Recipes are sorted by relevance to these constraints using their meta column data.",
         },
         limit: {
           type: "number" as const,
@@ -286,7 +341,20 @@ export const toolDefinitions = {
 export async function executeRAGSearch(
   args: RAGSearchArgs
 ): Promise<ToolResult> {
+  console.log("=".repeat(80));
+  console.log("[RAGSearch] Tool called - Received arguments:");
+  console.log(JSON.stringify(args, null, 2));
+  console.log("=".repeat(80));
   try {
+    console.log("[RAGSearch] Parsed args:");
+    console.log("  - query:", args.query);
+    console.log("  - excluded_ingredients:", args.excluded_ingredients);
+    console.log("  - included_ingredients:", args.included_ingredients);
+    console.log("  - max_time_minutes:", args.max_time_minutes);
+    console.log("  - difficulty:", args.difficulty);
+    console.log("  - userUid:", args.userUid);
+    console.log("  - limit:", args.limit);
+
     const ollama = new OllamaService();
     const milvus = new MilvusService();
 
@@ -471,6 +539,10 @@ export async function executeRAGSearch(
 export async function executeSQLSearch(
   args: SqlSearchArgs
 ): Promise<ToolResult> {
+  console.log("=".repeat(80));
+  console.log("[SQLSearch] Tool called - Received arguments:");
+  console.log(JSON.stringify(args, null, 2));
+  console.log("=".repeat(80));
   try {
     const {
       excluded_ingredients = [],
@@ -478,7 +550,19 @@ export async function executeSQLSearch(
       difficulty,
       cuisine,
       limit = 10,
+      included_ingredients,
+      macronutrients,
+      price_constraints,
     } = args;
+    console.log("[SQLSearch] Parsed args:");
+    console.log("  - excluded_ingredients:", excluded_ingredients);
+    console.log("  - included_ingredients:", included_ingredients);
+    console.log("  - max_time_minutes:", max_time_minutes);
+    console.log("  - difficulty:", difficulty);
+    console.log("  - cuisine:", cuisine);
+    console.log("  - limit:", limit);
+    console.log("  - macronutrients:", macronutrients);
+    console.log("  - price_constraints:", price_constraints);
 
     const conditions: string[] = [
       `r.status = 'published'`,
@@ -535,10 +619,17 @@ export async function executeSQLSearch(
 
     const whereClause = conditions.join(" AND ");
 
+    console.log("[SQLSearch] Executing query with whereClause:", whereClause);
+    console.log("[SQLSearch] Query params:", JSON.stringify(queryParams));
+
+    // Increase limit if we need to filter/sort by macronutrients or price
+    const queryLimit = macronutrients || price_constraints ? limit * 3 : limit;
+    queryParams[queryParams.length - 1] = queryLimit; // Update the limit parameter
+
     const recipes = await AppDataSource.query(
       `
       SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, 
-             r.servings, r."prepTime", r."cookTime",
+             r.servings, r."prepTime", r."cookTime", r.meta,
              (COALESCE(r."prepTime", 0) + COALESCE(r."cookTime", 0)) AS total_time,
              (
                SELECT COALESCE(
@@ -580,7 +671,133 @@ export async function executeSQLSearch(
       queryParams
     );
 
-    const formattedRecipes = recipes.map((r: RecipeRow) => ({
+    console.log("[SQLSearch] Raw recipes from DB:", recipes.length);
+    if (recipes.length > 0) {
+      console.log("[SQLSearch] First recipe:", recipes[0]?.recipe_name);
+    }
+
+    // Helper function to calculate macronutrient match score
+    const calculateMacroScore = (
+      meta: string | null,
+      macronutrients?: Record<string, "high" | "low">
+    ): number => {
+      if (!macronutrients || !meta) return 0;
+
+      try {
+        const metaData = JSON.parse(meta);
+        const macros = metaData?.macros || {};
+        let score = 0;
+        let totalChecks = 0;
+
+        for (const [nutrient, preference] of Object.entries(macronutrients)) {
+          totalChecks++;
+          const nutrientKey = nutrient.toLowerCase().replace(/[^a-z0-9]/g, "_");
+          const value = macros[nutrientKey] || macros[nutrient] || 0;
+
+          // Normalize nutrient values for comparison (using common thresholds)
+          const thresholds: Record<string, { high: number; low: number }> = {
+            protein: { high: 20, low: 10 },
+            carbohydrates: { high: 50, low: 20 },
+            fat: { high: 20, low: 5 },
+            calories: { high: 500, low: 200 },
+            fiber: { high: 5, low: 2 },
+            sugar: { high: 20, low: 5 },
+          };
+
+          const threshold = thresholds[nutrientKey] ||
+            thresholds[nutrient] || { high: value * 1.5, low: value * 0.5 };
+
+          if (preference === "high" && value >= threshold.high) {
+            score += 1;
+          } else if (preference === "low" && value <= threshold.low) {
+            score += 1;
+          } else if (preference === "high" && value > threshold.low) {
+            // Partial match - closer to high threshold
+            score += (value - threshold.low) / (threshold.high - threshold.low);
+          } else if (preference === "low" && value < threshold.high) {
+            // Partial match - closer to low threshold
+            score +=
+              (threshold.high - value) / (threshold.high - threshold.low);
+          }
+        }
+
+        return totalChecks > 0 ? score / totalChecks : 0;
+      } catch (error) {
+        console.error("[SQLSearch] Error parsing meta for macro score:", error);
+        return 0;
+      }
+    };
+
+    // Helper function to check price constraints
+    const matchesPriceConstraint = (
+      meta: string | null,
+      priceConstraints?: { min: number; max: number }
+    ): boolean => {
+      if (!priceConstraints || !meta) return true;
+
+      try {
+        const metaData = JSON.parse(meta);
+        const prices = metaData?.prices || {};
+
+        // Check all three price markets (indianPrice, norwegianPrice, americanPrice)
+        const priceValues = [
+          prices.indianPrice,
+          prices.norwegianPrice,
+          prices.americanPrice,
+        ].filter((p) => typeof p === "number" && p > 0);
+
+        if (priceValues.length === 0) return true; // No price data, don't filter out
+
+        // Recipe matches if ANY price market falls within the range
+        return priceValues.some(
+          (price) =>
+            price >= priceConstraints.min && price <= priceConstraints.max
+        );
+      } catch (error) {
+        console.error(
+          "[SQLSearch] Error parsing meta for price constraint:",
+          error
+        );
+        return true; // Don't filter out if we can't parse
+      }
+    };
+
+    // Filter and sort recipes based on macronutrients and price constraints
+    let filteredRecipes = recipes;
+
+    // Filter by price constraints
+    if (price_constraints) {
+      filteredRecipes = filteredRecipes.filter((r: any) =>
+        matchesPriceConstraint(r.meta, price_constraints)
+      );
+      console.log(
+        "[SQLSearch] After price filter:",
+        filteredRecipes.length,
+        "recipes"
+      );
+    }
+
+    // Sort by macronutrient match score if macronutrients specified
+    if (macronutrients && Object.keys(macronutrients).length > 0) {
+      filteredRecipes = filteredRecipes
+        .map((r: any) => ({
+          ...r,
+          macroScore: calculateMacroScore(r.meta, macronutrients),
+        }))
+        .sort((a: any, b: any) => b.macroScore - a.macroScore)
+        .slice(0, limit);
+      console.log(
+        "[SQLSearch] Sorted by macronutrient match, top scores:",
+        filteredRecipes.slice(0, 3).map((r: any) => ({
+          name: r.recipe_name,
+          score: r.macroScore,
+        }))
+      );
+    } else {
+      filteredRecipes = filteredRecipes.slice(0, limit);
+    }
+
+    const formattedRecipes = filteredRecipes.map((r: any) => ({
       id: r.id,
       recipe_name: r.recipe_name,
       slug: r.slug,
@@ -594,18 +811,50 @@ export async function executeSQLSearch(
       ingredients: r.ingredients || [],
     }));
 
-    return {
+    console.log(
+      "[SQLSearch] Formatted recipes count:",
+      formattedRecipes.length
+    );
+    console.log(
+      "[SQLSearch] Returning tool result with recipes:",
+      formattedRecipes.length > 0 ? "YES" : "NO"
+    );
+
+    const toolResult = {
       recipes: formattedRecipes,
       count: formattedRecipes.length,
       message: `Found ${formattedRecipes.length} recipe(s) matching all specified constraints`,
       filters_applied: {
         excluded_ingredients:
           excluded_ingredients.length > 0 ? excluded_ingredients : undefined,
+        included_ingredients:
+          included_ingredients && included_ingredients.length > 0
+            ? included_ingredients
+            : undefined,
         max_time_minutes: max_time_minutes || undefined,
         difficulty: difficulty || undefined,
         cuisine: cuisine || undefined,
+        price_constraints: price_constraints || undefined,
+        macronutrients: macronutrients || undefined,
       },
     };
+
+    console.log(
+      "[SQLSearch] Tool result structure:",
+      JSON.stringify(toolResult, null, 2)
+    );
+    console.log(
+      "[SQLSearch] Tool result.recipes length:",
+      toolResult.recipes.length
+    );
+    if (toolResult.recipes.length > 0) {
+      console.log(
+        "[SQLSearch] Tool result.recipes[0]:",
+        JSON.stringify(toolResult.recipes[0], null, 2)
+      );
+    }
+
+    return toolResult;
   } catch (error) {
     console.error("[sql_search] Error:", error);
     return {
@@ -622,24 +871,33 @@ export async function executeSQLSearch(
 export async function executeHybridSearch(
   args: HybridSearchArgs
 ): Promise<ToolResult> {
+  console.log("=".repeat(80));
+  console.log("[HybridSearch] Tool called - Received arguments:");
+  console.log(JSON.stringify(args, null, 2));
+  console.log("=".repeat(80));
   try {
     const {
       query,
       excluded_ingredients = [],
+      included_ingredients = [],
       max_time_minutes,
       difficulty,
       cuisine,
       limit = 10,
+      price_constraints,
+      macronutrients,
     } = args;
 
-    console.log("[HybridSearch] Input:", {
-      query,
-      excluded_ingredients,
-      max_time_minutes,
-      difficulty,
-      cuisine,
-      limit,
-    });
+    console.log("[HybridSearch] Parsed args:");
+    console.log("  - query:", query);
+    console.log("  - excluded_ingredients:", excluded_ingredients);
+    console.log("  - included_ingredients:", included_ingredients);
+    console.log("  - max_time_minutes:", max_time_minutes);
+    console.log("  - difficulty:", difficulty);
+    console.log("  - cuisine:", cuisine);
+    console.log("  - limit:", limit);
+    console.log("  - price_constraints:", price_constraints);
+    console.log("  - macronutrients:", macronutrients);
 
     const ollama = new OllamaService();
     const milvus = new MilvusService();
@@ -715,14 +973,42 @@ export async function executeHybridSearch(
       paramIndex++;
     }
 
-    queryParams.push(limit);
+    // Require included ingredients if specified
+    if (included_ingredients && included_ingredients.length > 0) {
+      const includeConditions: string[] = [];
+      for (let i = 0; i < included_ingredients.length; i++) {
+        const paramIdx = paramIndex + i;
+        includeConditions.push(`LOWER(i.name) ILIKE $${paramIdx}`);
+        queryParams.push(`%${included_ingredients[i].toLowerCase().trim()}%`);
+      }
+      conditions.push(`
+        EXISTS (
+          SELECT 1
+          FROM recipe_ingredient ri
+          INNER JOIN ingredient i ON ri."ingredientId" = i.id
+          WHERE ri."recipeId" = r.id
+            AND ri."deletedAt" IS NULL
+            AND (${includeConditions.join(" OR ")})
+        )
+      `);
+      paramIndex += included_ingredients.length;
+      console.log(
+        "[HybridSearch] Added included_ingredients filter:",
+        included_ingredients
+      );
+    }
+
+    // Increase limit if we need to filter/sort by macronutrients or price
+    const queryLimit =
+      macronutrients || price_constraints ? limit * 5 : limit * 3;
+    queryParams.push(queryLimit);
 
     const whereClause = conditions.join(" AND ");
 
     const recipes = await AppDataSource.query(
       `
       SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, 
-             r.servings, r."prepTime", r."cookTime",
+             r.servings, r."prepTime", r."cookTime", r.meta,
              (COALESCE(r."prepTime", 0) + COALESCE(r."cookTime", 0)) AS total_time,
              (
                SELECT COALESCE(
@@ -776,8 +1062,102 @@ export async function executeHybridSearch(
       milvusResults.map((r: MilvusResult) => [r.recipe_id, r])
     );
 
+    // Helper function to calculate macronutrient match score (same as SQL search)
+    const calculateMacroScore = (
+      meta: string | null,
+      macronutrients?: Record<string, "high" | "low">
+    ): number => {
+      if (!macronutrients || !meta) return 0;
+
+      try {
+        const metaData = JSON.parse(meta);
+        const macros = metaData?.macros || {};
+        let score = 0;
+        let totalChecks = 0;
+
+        for (const [nutrient, preference] of Object.entries(macronutrients)) {
+          totalChecks++;
+          const nutrientKey = nutrient.toLowerCase().replace(/[^a-z0-9]/g, "_");
+          const value = macros[nutrientKey] || macros[nutrient] || 0;
+
+          // Normalize nutrient values for comparison (using common thresholds)
+          const thresholds: Record<string, { high: number; low: number }> = {
+            protein: { high: 20, low: 10 },
+            carbohydrates: { high: 50, low: 20 },
+            fat: { high: 20, low: 5 },
+            calories: { high: 500, low: 200 },
+            fiber: { high: 5, low: 2 },
+            sugar: { high: 20, low: 5 },
+          };
+
+          const threshold = thresholds[nutrientKey] ||
+            thresholds[nutrient] || { high: value * 1.5, low: value * 0.5 };
+
+          if (preference === "high" && value >= threshold.high) {
+            score += 1;
+          } else if (preference === "low" && value <= threshold.low) {
+            score += 1;
+          } else if (preference === "high" && value > threshold.low) {
+            // Partial match - closer to high threshold
+            score += Math.min(
+              1,
+              (value - threshold.low) / (threshold.high - threshold.low)
+            );
+          } else if (preference === "low" && value < threshold.high) {
+            // Partial match - closer to low threshold
+            score += Math.min(
+              1,
+              (threshold.high - value) / (threshold.high - threshold.low)
+            );
+          }
+        }
+
+        return totalChecks > 0 ? score / totalChecks : 0;
+      } catch (error) {
+        console.error(
+          "[HybridSearch] Error parsing meta for macro score:",
+          error
+        );
+        return 0;
+      }
+    };
+
+    // Helper function to check price constraints (same as SQL search)
+    const matchesPriceConstraint = (
+      meta: string | null,
+      priceConstraints?: { min: number; max: number }
+    ): boolean => {
+      if (!priceConstraints || !meta) return true;
+
+      try {
+        const metaData = JSON.parse(meta);
+        const prices = metaData?.prices || {};
+
+        // Check all three price markets (indianPrice, norwegianPrice, americanPrice)
+        const priceValues = [
+          prices.indianPrice,
+          prices.norwegianPrice,
+          prices.americanPrice,
+        ].filter((p) => typeof p === "number" && p > 0);
+
+        if (priceValues.length === 0) return true; // No price data, don't filter out
+
+        // Recipe matches if ANY price market falls within the range
+        return priceValues.some(
+          (price) =>
+            price >= priceConstraints.min && price <= priceConstraints.max
+        );
+      } catch (error) {
+        console.error(
+          "[HybridSearch] Error parsing meta for price constraint:",
+          error
+        );
+        return true; // Don't filter out if we can't parse
+      }
+    };
+
     let filteredOutCount = 0;
-    const recipesWithSimilarity: RecipeWithSimilarity[] = recipeIds
+    let recipesWithSimilarity: RecipeWithSimilarity[] = recipeIds
       .map((id: string): RecipeWithSimilarity | null => {
         const recipe = recipeMap.get(id);
         const milvusResult = milvusMap.get(id);
@@ -798,6 +1178,25 @@ export async function executeHybridSearch(
           return null;
         }
 
+        // Post-filter: Check price constraints
+        if (
+          price_constraints &&
+          !matchesPriceConstraint((recipe as any).meta, price_constraints)
+        ) {
+          filteredOutCount++;
+          console.log(
+            "[HybridSearch] Filtered out recipe:",
+            recipe.recipe_name,
+            "- price constraint not met"
+          );
+          return null;
+        }
+
+        const macroScore = calculateMacroScore(
+          (recipe as any).meta,
+          macronutrients
+        );
+
         return {
           id: recipe.id,
           recipe_name: recipe.recipe_name,
@@ -812,13 +1211,40 @@ export async function executeHybridSearch(
           ingredients: recipe.ingredients || [],
           similarity: milvusResult?.similarity || 0,
           distance: milvusResult?.distance || 0,
-        };
+          macroScore, // Add macro score for sorting
+        } as RecipeWithSimilarity & { macroScore: number };
       })
       .filter(
         (r: RecipeWithSimilarity | null): r is RecipeWithSimilarity =>
           r !== null
-      )
-      .slice(0, limit);
+      );
+
+    // Sort by macronutrient match score if specified, then by similarity
+    if (macronutrients && Object.keys(macronutrients).length > 0) {
+      recipesWithSimilarity = (recipesWithSimilarity as any[])
+        .sort((a: any, b: any) => {
+          // First sort by macro score (descending)
+          if (b.macroScore !== a.macroScore) {
+            return b.macroScore - a.macroScore;
+          }
+          // Then by similarity (descending)
+          return (b.similarity || 0) - (a.similarity || 0);
+        })
+        .slice(0, limit);
+      console.log(
+        "[HybridSearch] Sorted by macronutrient match, top scores:",
+        recipesWithSimilarity.slice(0, 3).map((r: any) => ({
+          name: r.recipe_name,
+          macroScore: r.macroScore,
+          similarity: r.similarity,
+        }))
+      );
+    } else {
+      // Sort by similarity only
+      recipesWithSimilarity = recipesWithSimilarity
+        .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+        .slice(0, limit);
+    }
 
     console.log(
       "[HybridSearch] Final result:",
@@ -836,9 +1262,15 @@ export async function executeHybridSearch(
         semantic_query: query,
         excluded_ingredients:
           excluded_ingredients.length > 0 ? excluded_ingredients : undefined,
+        included_ingredients:
+          included_ingredients && included_ingredients.length > 0
+            ? included_ingredients
+            : undefined,
         max_time_minutes: max_time_minutes || undefined,
         difficulty: difficulty || undefined,
         cuisine: cuisine || undefined,
+        price_constraints: price_constraints || undefined,
+        macronutrients: macronutrients || undefined,
       },
     };
   } catch (error) {

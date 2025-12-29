@@ -91,6 +91,9 @@ export class Recipe {
   @Column("tsvector", { name: "search_vector", nullable: true })
   searchVector: string | null;
 
+  @Column("text", { name: "meta", nullable: true })
+  meta: string | null;
+
   @OneToMany(() => BundleRecipe, (bundleRecipe) => bundleRecipe.recipe)
   bundleRecipes: BundleRecipe[];
 

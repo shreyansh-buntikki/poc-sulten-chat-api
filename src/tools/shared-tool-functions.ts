@@ -84,6 +84,7 @@ export interface SqlSearchArgs {
   limit?: number;
   price_constraints?: { min: number; max: number };
   macronutrients?: Record<string, "high" | "low">;
+  seasonality?: string[];
 }
 
 export interface HybridSearchArgs {
@@ -96,6 +97,7 @@ export interface HybridSearchArgs {
   limit?: number;
   price_constraints?: { min: number; max: number };
   macronutrients?: Record<string, "high" | "low">;
+  seasonality?: string[];
 }
 
 interface MilvusResult {
@@ -207,7 +209,7 @@ export const toolDefinitions = {
   sql_search: {
     name: "sql_search",
     description:
-      'Search recipes using exact SQL filters for hard constraints. Use when user has strict requirements like allergies ("no chicken"), time limits ("under 30 mins"), difficulty ("easy only"), cuisine ("Italian"), macronutrients ("high protein", "low calories"), or price constraints. This tool guarantees exact compliance - it never guesses or approximates. Recipes are sorted by macronutrient match score when macronutrients are specified.',
+      'Search recipes using exact SQL filters for hard constraints. Use when user has strict requirements like allergies ("no chicken"), time limits ("under 30 mins"), difficulty ("easy only"), cuisine ("Italian"), macronutrients ("high protein", "low calories"), price constraints, or seasonality ("spring", "summer", "winter"). This tool guarantees exact compliance - it never guesses or approximates. Recipes are sorted by macronutrient match score when macronutrients are specified.',
     parameters: {
       type: "object" as const,
       properties: {
@@ -256,6 +258,12 @@ export const toolDefinitions = {
           description:
             "Filter by macronutrient levels. Keys are nutrient names (e.g., 'protein', 'carbohydrates', 'fat', 'calories'). Values are 'high' or 'low'. Recipes are sorted by relevance to these constraints using their meta column data. Example: {protein: 'high', calories: 'low'}.",
         },
+        seasonality: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description:
+            "Filter by seasonality, festivals, or occasions. Array of lowercase snake_case strings. Can include seasons (e.g., 'spring', 'summer', 'autumn', 'fall', 'winter') or festivals/occasions (e.g., 'christmas', 'thanksgiving', 'easter', 'diwali', 'holi', 'new_year', 'independence_day'). Recipes must have at least one matching seasonality in their meta column. Example: ['spring', 'summer'] or ['christmas', 'winter'].",
+        },
         limit: {
           type: "number" as const,
           description: "Maximum number of recipes to return (default: 10)",
@@ -267,7 +275,7 @@ export const toolDefinitions = {
   hybrid_search: {
     name: "hybrid_search",
     description:
-      'Hybrid search combining semantic similarity with hard constraints. Use when user has both mood-based preferences (e.g., "cozy dinner", "comforting meal") AND hard constraints (e.g., allergies like "no chicken", time limits, difficulty, macronutrients, price). Guarantees safety (hard constraints) while maximizing relevance (semantic match). Example: "I want something cozy for dinner, but I\'m allergic to chicken" - returns chicken-free recipes ranked by how "cozy" they are.',
+      'Hybrid search combining semantic similarity with hard constraints. Use when user has both mood-based preferences (e.g., "cozy dinner", "comforting meal") AND hard constraints (e.g., allergies like "no chicken", time limits, difficulty, macronutrients, price, seasonality). Guarantees safety (hard constraints) while maximizing relevance (semantic match). Example: "I want something cozy for dinner, but I\'m allergic to chicken" - returns chicken-free recipes ranked by how "cozy" they are.',
     parameters: {
       type: "object" as const,
       properties: {
@@ -321,6 +329,12 @@ export const toolDefinitions = {
           description:
             "Hard constraint: Filter by macronutrient levels. Keys are nutrient names (e.g., 'protein', 'carbohydrates', 'fat', 'calories'). Values are 'high' or 'low'. Recipes are sorted by relevance to these constraints using their meta column data.",
         },
+        seasonality: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description:
+            "Hard constraint: Filter by seasonality, festivals, or occasions. Array of lowercase snake_case strings. Can include seasons (e.g., 'spring', 'summer', 'autumn', 'fall', 'winter') or festivals/occasions (e.g., 'christmas', 'thanksgiving', 'easter', 'diwali', 'holi', 'new_year', 'independence_day'). Recipes must have at least one matching seasonality in their meta column. Example: ['spring', 'summer'] or ['christmas', 'winter'].",
+        },
         limit: {
           type: "number" as const,
           description: "Maximum number of recipes to return (default: 10)",
@@ -358,8 +372,7 @@ export async function executeRAGSearch(
       Math.max((args.limit || 10) * 3, 50),
       {
         excluded_ingredients: args.excluded_ingredients || [],
-       required_ingredients: args.included_ingredients || [],
-        
+        required_ingredients: args.included_ingredients || [],
       }
       // No intent passed - filtering done in post-processing
     );
@@ -549,6 +562,7 @@ export async function executeSQLSearch(
       included_ingredients,
       macronutrients,
       price_constraints,
+      seasonality,
     } = args;
 
     const conditions: string[] = [
@@ -606,8 +620,9 @@ export async function executeSQLSearch(
 
     const whereClause = conditions.join(" AND ");
 
-    // Increase limit if we need to filter/sort by macronutrients or price
-    const queryLimit = macronutrients || price_constraints ? limit * 3 : limit;
+    // Increase limit if we need to filter/sort by macronutrients, price, or seasonality
+    const queryLimit =
+      macronutrients || price_constraints || seasonality ? limit * 3 : limit;
     queryParams[queryParams.length - 1] = queryLimit; // Update the limit parameter
 
     const recipes = await AppDataSource.query(
@@ -746,13 +761,56 @@ export async function executeSQLSearch(
       }
     };
 
-    // Filter and sort recipes based on macronutrients and price constraints
+    // Helper function to check seasonality
+    const matchesSeasonality = (
+      meta: string | null,
+      seasonality?: string[]
+    ): boolean => {
+      if (!seasonality || seasonality.length === 0 || !meta) return true;
+
+      try {
+        const metaData = JSON.parse(meta);
+        const recipeSeasonality = metaData?.seasonality || [];
+
+        if (
+          !Array.isArray(recipeSeasonality) ||
+          recipeSeasonality.length === 0
+        ) {
+          return true; // No seasonality data, don't filter out
+        }
+
+        // Normalize both arrays to lowercase for comparison
+        const normalizedRecipeSeasons = recipeSeasonality.map((s: string) =>
+          s.toLowerCase().trim()
+        );
+        const normalizedRequestedSeasons = seasonality.map((s: string) =>
+          s.toLowerCase().trim()
+        );
+
+        // Recipe matches if ANY requested seasonality is in the recipe's seasonality
+        return normalizedRequestedSeasons.some((requestedSeason) =>
+          normalizedRecipeSeasons.includes(requestedSeason)
+        );
+      } catch (error) {
+        console.error("[SQLSearch] Error parsing meta for seasonality:", error);
+        return true; // Don't filter out if we can't parse
+      }
+    };
+
+    // Filter and sort recipes based on macronutrients, price constraints, and seasonality
     let filteredRecipes = recipes;
 
     // Filter by price constraints
     if (price_constraints) {
       filteredRecipes = filteredRecipes.filter((r: any) =>
         matchesPriceConstraint(r.meta, price_constraints)
+      );
+    }
+
+    // Filter by seasonality
+    if (seasonality && seasonality.length > 0) {
+      filteredRecipes = filteredRecipes.filter((r: any) =>
+        matchesSeasonality(r.meta, seasonality)
       );
     }
 
@@ -799,6 +857,8 @@ export async function executeSQLSearch(
         cuisine: cuisine || undefined,
         price_constraints: price_constraints || undefined,
         macronutrients: macronutrients || undefined,
+        seasonality:
+          seasonality && seasonality.length > 0 ? seasonality : undefined,
       },
     };
 
@@ -834,6 +894,7 @@ export async function executeHybridSearch(
       limit = 10,
       price_constraints,
       macronutrients,
+      seasonality,
     } = args;
 
     const ollama = new OllamaService();
@@ -920,9 +981,11 @@ export async function executeHybridSearch(
       paramIndex += included_ingredients.length;
     }
 
-    // Increase limit if we need to filter/sort by macronutrients or price
+    // Increase limit if we need to filter/sort by macronutrients, price, or seasonality
     const queryLimit =
-      macronutrients || price_constraints ? limit * 5 : limit * 3;
+      macronutrients || price_constraints || seasonality
+        ? limit * 5
+        : limit * 3;
     queryParams.push(queryLimit);
 
     const whereClause = conditions.join(" AND ");
@@ -1072,6 +1135,45 @@ export async function executeHybridSearch(
       }
     };
 
+    // Helper function to check seasonality (same as SQL search)
+    const matchesSeasonality = (
+      meta: string | null,
+      seasonality?: string[]
+    ): boolean => {
+      if (!seasonality || seasonality.length === 0 || !meta) return true;
+
+      try {
+        const metaData = JSON.parse(meta);
+        const recipeSeasonality = metaData?.seasonality || [];
+
+        if (
+          !Array.isArray(recipeSeasonality) ||
+          recipeSeasonality.length === 0
+        ) {
+          return true; // No seasonality data, don't filter out
+        }
+
+        // Normalize both arrays to lowercase for comparison
+        const normalizedRecipeSeasons = recipeSeasonality.map((s: string) =>
+          s.toLowerCase().trim()
+        );
+        const normalizedRequestedSeasons = seasonality.map((s: string) =>
+          s.toLowerCase().trim()
+        );
+
+        // Recipe matches if ANY requested seasonality is in the recipe's seasonality
+        return normalizedRequestedSeasons.some((requestedSeason) =>
+          normalizedRecipeSeasons.includes(requestedSeason)
+        );
+      } catch (error) {
+        console.error(
+          "[HybridSearch] Error parsing meta for seasonality:",
+          error
+        );
+        return true; // Don't filter out if we can't parse
+      }
+    };
+
     let filteredOutCount = 0;
     let recipesWithSimilarity: RecipeWithSimilarity[] = recipeIds
       .map((id: string): RecipeWithSimilarity | null => {
@@ -1093,6 +1195,16 @@ export async function executeHybridSearch(
         if (
           price_constraints &&
           !matchesPriceConstraint((recipe as any).meta, price_constraints)
+        ) {
+          filteredOutCount++;
+          return null;
+        }
+
+        // Post-filter: Check seasonality
+        if (
+          seasonality &&
+          seasonality.length > 0 &&
+          !matchesSeasonality((recipe as any).meta, seasonality)
         ) {
           filteredOutCount++;
           return null;
@@ -1161,6 +1273,8 @@ export async function executeHybridSearch(
         cuisine: cuisine || undefined,
         price_constraints: price_constraints || undefined,
         macronutrients: macronutrients || undefined,
+        seasonality:
+          seasonality && seasonality.length > 0 ? seasonality : undefined,
       },
     };
   } catch (error) {

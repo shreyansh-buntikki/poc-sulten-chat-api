@@ -198,6 +198,7 @@ export class LlmService {
       norwegianPrice: number;
       americanPrice: number;
     };
+    seasonality?: string[];
     tokens: {
       prompt_tokens: number;
       completion_tokens: number;
@@ -216,79 +217,89 @@ export class LlmService {
       .join("\n");
 
     const prompt = `You are a nutritionist and pricing expert. Analyze the following recipe and provide:
-1. COMPLETE and EXHAUSTIVE nutritional information - include ALL macros, vitamins, minerals, fatty acids, amino acids, antioxidants, and any other nutritional compounds present in the recipe
-2. Estimated cost to cook this recipe in three markets: Indian (INR), Norwegian (NOK), and American (USD)
-
-Recipe Name: ${recipe.recipeName}
-
-Ingredients:
-${ingredientsText}
-
-Instructions:
-${instructionsText}
-
-CRITICAL INSTRUCTIONS:
-- You MUST automatically identify and include ALL nutritional values present in the recipe based on the ingredients
-- Analyze each ingredient and determine what nutritional compounds it contains (macros, vitamins, minerals, fatty acids, amino acids, antioxidants, phytochemicals, etc.)
-- Do NOT limit yourself to only the nutrients listed in the example structure below
-- Automatically detect and include ANY additional nutritional compounds you identify from the ingredients
-- Include ALL trace minerals, amino acids, bioactive compounds, and phytochemicals you can identify
-- Use snake_case for ALL keys (e.g., omega_3, lycopene, beta_carotene, not omega3 or omega-3)
-- Include values even if they are small amounts - be comprehensive and exhaustive
-- Think like a nutritionist: analyze what each ingredient contributes nutritionally and include everything
-
-Return ONLY a valid JSON object with this structure (the macros object should include ALL nutrients found, not just these examples):
-{
-  "macros": {
-    "protein": <number in grams>,
-    "carbohydrates": <number in grams>,
-    "fat": <number in grams>,
-    "fiber": <number in grams>,
-    "sugar": <number in grams>,
-    "sodium": <number in milligrams>,
-    "calories": <number>,
-    "vitamin_a": <number in IU or mcg>,
-    "vitamin_c": <number in milligrams>,
-    "calcium": <number in milligrams>,
-    "iron": <number in milligrams>,
-    "potassium": <number in milligrams>,
-    "magnesium": <number in milligrams>,
-    "phosphorus": <number in milligrams>,
-    "zinc": <number in milligrams>,
-    "vitamin_d": <number in IU or mcg>,
-    "vitamin_e": <number in milligrams>,
-    "vitamin_k": <number in micrograms>,
-    "thiamin": <number in milligrams>,
-    "riboflavin": <number in milligrams>,
-    "niacin": <number in milligrams>,
-    "vitamin_b6": <number in milligrams>,
-    "folate": <number in micrograms>,
-    "vitamin_b12": <number in micrograms>,
-    "biotin": <number in micrograms>,
-    "pantothenic_acid": <number in milligrams>,
-    "cholesterol": <number in milligrams>,
-    "saturated_fat": <number in grams>,
-    "monounsaturated_fat": <number in grams>,
-    "polyunsaturated_fat": <number in grams>,
-    "trans_fat": <number in grams>
-    ...automatically add ALL other nutritional compounds you identify from analyzing the ingredients
-  },
-  "prices": {
-    "indianPrice": <number in INR>,
-    "norwegianPrice": <number in NOK>,
-    "americanPrice": <number in USD>
-  }
-}
-
-Rules:
-- Use snake_case for all macro keys (e.g., omega_3, vitamin_a, beta_carotene, lycopene)
-- Automatically analyze each ingredient and identify ALL nutritional compounds it contains
-- Include ALL nutritional values you can identify from the ingredients - be exhaustive and comprehensive
-- Think about what each ingredient contributes: fatty acids, vitamins, minerals, antioxidants, amino acids, etc.
-- If a nutrient is not present or cannot be determined, you may omit it (don't use 0 for everything)
-- Prices should be realistic market estimates for the total recipe cost
-- Return ONLY the JSON object, no additional text or explanation
-- The macros object should be comprehensive and include every nutritional compound you can automatically identify from the ingredients`;
+      1. COMPLETE and EXHAUSTIVE nutritional information - include ALL macros, vitamins, minerals, fatty acids, amino acids, antioxidants, and any other nutritional compounds present in the recipe
+      2. Estimated cost to cook this recipe in three markets: Indian (INR), Norwegian (NOK), and American (USD)
+      3. Seasonality and cultural / occasion suitability of the dish across India, Norway, and the United States
+      
+      Recipe Name: ${recipe.recipeName}
+      
+      Ingredients:
+      ${ingredientsText}
+      
+      Instructions:
+      ${instructionsText}
+      
+      CRITICAL INSTRUCTIONS:
+      - You MUST automatically identify and include ALL nutritional values present in the recipe based on the ingredients
+      - Analyze each ingredient and determine what nutritional compounds it contains (macros, vitamins, minerals, fatty acids, amino acids, antioxidants, phytochemicals, etc.)
+      - Do NOT limit yourself to only the nutrients listed in the example structure below
+      - Automatically detect and include ANY additional nutritional compounds you identify from the ingredients
+      - Include ALL trace minerals, amino acids, bioactive compounds, and phytochemicals you can identify
+      - Use snake_case for ALL keys (e.g., omega_3, lycopene, beta_carotene, not omega3 or omega-3)
+      - Include values even if they are small amounts - be comprehensive and exhaustive
+      - Think like a nutritionist: analyze what each ingredient contributes nutritionally and include everything
+      
+      SEASONALITY INSTRUCTIONS:
+      - Infer when and on which occasions this dish is commonly consumed
+      - Consider climate, temperature, richness, freshness, cultural habits, and traditional usage
+      - Include seasonality and occasions as a SINGLE array of strings called "seasonality"
+      - Combine seasons and occasions in the same array
+      - Include region-specific context (Indian, Norwegian, American) where relevant
+      - Use lowercase snake_case for all seasonality values
+      - Include multiple values if applicable
+      - If the dish is commonly eaten year-round, include "all_seasons"
+      
+      Return ONLY a valid JSON object with this structure (the macros object should include ALL nutrients found, not just these examples):
+      {
+        "macros": {
+          "protein": <number in grams>,
+          "carbohydrates": <number in grams>,
+          "fat": <number in grams>,
+          "fiber": <number in grams>,
+          "sugar": <number in grams>,
+          "sodium": <number in milligrams>,
+          "calories": <number>,
+          "vitamin_a": <number in IU or mcg>,
+          "vitamin_c": <number in milligrams>,
+          "calcium": <number in milligrams>,
+          "iron": <number in milligrams>,
+          "potassium": <number in milligrams>,
+          "magnesium": <number in milligrams>,
+          "phosphorus": <number in milligrams>,
+          "zinc": <number in milligrams>,
+          "vitamin_d": <number in IU or mcg>,
+          "vitamin_e": <number in milligrams>,
+          "vitamin_k": <number in micrograms>,
+          "thiamin": <number in milligrams>,
+          "riboflavin": <number in milligrams>,
+          "niacin": <number in milligrams>,
+          "vitamin_b6": <number in milligrams>,
+          "folate": <number in micrograms>,
+          "vitamin_b12": <number in micrograms>,
+          "biotin": <number in micrograms>,
+          "pantothenic_acid": <number in milligrams>,
+          "cholesterol": <number in milligrams>,
+          "saturated_fat": <number in grams>,
+          "monounsaturated_fat": <number in grams>,
+          "polyunsaturated_fat": <number in grams>,
+          "trans_fat": <number in grams>
+          ...automatically add ALL other nutritional compounds you identify from analyzing the ingredients
+        },
+        "prices": {
+          "indianPrice": <number in INR>,
+          "norwegianPrice": <number in NOK>,
+          "americanPrice": <number in USD>
+        },
+        "seasonality": ["winter", "diwali", "christmas", "summer_bbq"]
+      }
+      
+      Rules:
+      - Use snake_case for all macro keys
+      - Automatically analyze each ingredient and identify ALL nutritional compounds it contains
+      - Include ALL nutritional values you can identify from the ingredients
+      - Prices should be realistic market estimates for the total recipe cost
+      - Return ONLY the JSON object, no additional text or explanation
+      - The macros object should be comprehensive and include every nutritional compound you can automatically identify from the ingredients`;
 
     const systemPrompt =
       "You are a comprehensive nutritionist and pricing expert. You automatically analyze ingredients and identify ALL nutritional compounds present (macros, vitamins, minerals, fatty acids, amino acids, antioxidants, phytochemicals, etc.). You include everything you detect, not just common nutrients. Always use snake_case for all keys. Always respond with valid JSON only, no additional text.";
@@ -354,8 +365,19 @@ Rules:
         completion_tokens: completion.usage?.completion_tokens || 0,
         total_tokens: completion.usage?.total_tokens || 0,
       };
+      let seasonality: string[] = [];
+      if (
+        parsed.seasonality &&
+        typeof parsed.seasonality === "object" &&
+        Array.isArray(parsed.seasonality)
+      ) {
+        seasonality =
+          parsed.seasonality?.map(
+            (item: string) => item?.toLowerCase().replace(/ /g, "_") || ""
+          ) || [];
+      }
 
-      return { macros, prices, tokens };
+      return { macros, prices, tokens, seasonality };
     } catch (error) {
       console.error("Error parsing recipe metadata JSON:", error);
       console.error("Response was:", response);

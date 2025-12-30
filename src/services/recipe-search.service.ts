@@ -212,7 +212,11 @@ Do NOT search for or invent any new recipes, and do NOT invent new ingredients t
       recipesForContext = result.recipes;
     }
 
-    console.log("recipesForContext", recipesForContext.length, result.recipes.length);
+    console.log(
+      "recipesForContext",
+      recipesForContext.length,
+      result.recipes.length
+    );
 
     const ragResult = {
       similarRecipes: recipesForContext,
@@ -469,6 +473,7 @@ Do NOT search for or invent any new recipes, and do NOT invent new ingredients t
           const metaString = JSON.stringify({
             macros: metadata.macros,
             prices: metadata.prices,
+            seasonality: metadata.seasonality || [],
           });
 
           // Update the recipe with metadata
@@ -484,6 +489,7 @@ Do NOT search for or invent any new recipes, and do NOT invent new ingredients t
             instructions: recipe.instructions,
             macros: metadata.macros,
             prices: metadata.prices,
+            seasonality: metadata.seasonality || [],
           });
         } catch (error) {
           console.error(

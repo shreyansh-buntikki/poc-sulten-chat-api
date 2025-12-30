@@ -388,4 +388,43 @@ export class LlmService {
       );
     }
   }
+
+  async generateEphemeralToken(model?: string) {
+    try {
+      const response = await this.openai.beta.realtime.sessions.create({
+        model: 'gpt-4o-mini-realtime-preview-2024-12-17',
+        voice: 'ash'
+      })
+      console.log("Response from OpenAI:", response.client_secret);
+      if (!response.client_secret.value) {
+        console.error("No token value in response from OpenAI");
+        throw new Error("No token value in response from OpenAI");
+      }
+      return {
+        token: response.client_secret.value,
+        expires_at: response.client_secret.expires_at,
+        data: response,
+      };
+    } catch (error: any) {
+      // Log the actual error response from OpenAI
+      if (error.response) {
+        console.error("[LlmService] OpenAI API Error Response:", {
+          status: error.response.status,
+          statusText: error.response.statusText,
+          data: error.response.data,
+          error: error.response.data?.error,
+        });
+      }
+      console.error("[LlmService] Error in generateEphemeralToken:", error);
+      throw new Error(
+        `Failed to generate ephemeral token: ${
+          error instanceof Error ? error.message : String(error)
+        }${
+          error.response?.data?.error
+            ? ` - ${JSON.stringify(error.response.data.error)}`
+            : ""
+        }`
+      );
+    }
+  }
 }

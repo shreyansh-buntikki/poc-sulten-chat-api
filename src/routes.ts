@@ -71,6 +71,7 @@ mainRouter.post(
 
 mainRouter.post("/vapi/get-recipes/:userId", UserController.getRecipes);
 
+mainRouter.post("/openai/get-recipes/:userId", UserController.getRecipesOpenAI);
 // Agent-based recipe search endpoint (OpenAI)
 mainRouter.post("/openai/agent/search/:userId", UserController.searchWithAgent);
 
@@ -81,5 +82,10 @@ mainRouter.post(
 );
 
 mainRouter.post("/ollama/recipes/meta", UserController.generateRecipesMeta);
+
+mainRouter.post(
+  "/openai/agent/ephemeral-token",
+  UserController.generateEphemeralTokens
+);
 
 export default mainRouter;

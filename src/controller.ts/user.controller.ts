@@ -4,6 +4,8 @@ import { RecipeSearchService } from "../services/recipe-search.service";
 import { EmbeddingGenerationService } from "../services/embedding-generation.service";
 import { ChatService } from "../services/chat.service";
 import { VectorService } from "../services/vector.service";
+import { LlmService } from "../services/llm.service";
+import { runRecipeAgent } from "../tools/agent-runner";
 
 export class UserController {
   static async search(req: Request, res: Response) {
@@ -177,6 +179,20 @@ export class UserController {
       res.status(500).json({ message: "Internal server error", error });
     }
   }
+  
+  static async getRecipesOpenAI(req: Request, res: Response) {
+    try {
+      const { query } = req.body;
+      const { userId } = req.params;
+
+      const result = await runRecipeAgent(query);
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("[Controller] Error in getRecipesOpenAI:", error);
+      res.status(500).json({ message: "Internal server error", error });
+    }
+  }
+
 
   static async generateRecipesMeta(req: Request, res: Response) {
     try {
@@ -253,6 +269,23 @@ export class UserController {
       return res.status(200).json(result);
     } catch (error) {
       console.error("[Controller] Error in searchWithGroqAgent:", error);
+      res.status(500).json({
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  static async generateEphemeralTokens(req: Request, res: Response) {
+    try {
+      const llmService = new LlmService();
+      const result = await llmService.generateEphemeralToken();
+      res.status(200).json({
+        message: "Ephemeral tokens generated successfully",
+        result,
+      });
+    } catch (error) {
+      console.error("[Controller] Error in generateEphemeralTokens:", error);
       res.status(500).json({
         message: "Internal server error",
         error: error instanceof Error ? error.message : String(error),

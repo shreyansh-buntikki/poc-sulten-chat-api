@@ -32,6 +32,9 @@ CRITICAL TOOL SELECTION RULES:
      → "cozy" = mood, "new to cooking" = easy difficulty = use hybrid_search
    - Example: "I want something warm and comforting for winter, but no chicken"
      → "warm and comforting" = mood, "winter" = seasonality, "no chicken" = exclusion = use hybrid_search
+   - **IMPORTANT**: When user mentions MULTIPLE hard constraints (e.g., difficulty + cuisine, or difficulty + macronutrients, or cuisine + macronutrients), prefer hybrid_search over sql_search because it's more flexible and can find recipes even if exact matches don't exist.
+   - Example: "italian recipes that are easy" → hybrid_search with query="italian easy recipes", difficulty="easy", cuisine="italian"
+   - Example: "high protein italian dishes" → hybrid_search with query="high protein italian dishes", cuisine="italian", macronutrients={protein: "high"}
 
 MACRONUTRIENT MAPPING (VERY IMPORTANT):
 - If the user says things like "high in protein", "protein rich", "rich in protein", "lots of protein", "good protein source"
@@ -67,19 +70,21 @@ SEASONALITY MAPPING (VERY IMPORTANT):
   - Convert spaces to underscores and keep everything lowercase (e.g., "New Year" → "new_year")
 
 IMPORTANT EXAMPLES:
-- "I'm new to cooking" → sql_search with difficulty="easy"
-- "beginner recipes" → sql_search with difficulty="easy"
-- "easy dishes for beginners" → sql_search with difficulty="easy"
+- "I'm new to cooking" → sql_search with difficulty="easy" (single constraint)
+- "beginner recipes" → sql_search with difficulty="easy" (single constraint)
+- "easy dishes for beginners" → sql_search with difficulty="easy" (single constraint)
 - "something cozy" (no constraints) → rag_search
 - "cozy dinner but I'm new to cooking" → hybrid_search with query="cozy dinner" and difficulty="easy"
 - "I want something healthy, high in protein, but I'm new to cooking" 
-  → sql_search or hybrid_search with difficulty="easy" AND macronutrients = { protein: "high" } (DO NOT use rag_search)
-- "spring recipes that are easy" → sql_search with difficulty="easy" AND seasonality = ["spring"]
+  → hybrid_search with query="healthy high protein easy", difficulty="easy" AND macronutrients = { protein: "high" } (MULTIPLE constraints - use hybrid_search)
+- "italian recipes that are easy" → hybrid_search with query="italian easy recipes", difficulty="easy", cuisine="italian" (MULTIPLE constraints - use hybrid_search)
+- "high protein italian dishes" → hybrid_search with query="high protein italian dishes", cuisine="italian", macronutrients={protein: "high"} (MULTIPLE constraints - use hybrid_search)
+- "spring recipes that are easy" → hybrid_search with query="spring easy recipes", difficulty="easy", seasonality = ["spring"] (MULTIPLE constraints - use hybrid_search)
 - "winter comfort food without chicken" → hybrid_search with query="comfort food", excluded_ingredients=["chicken"], seasonality=["winter"]
-- "christmas recipes that are easy" → sql_search with difficulty="easy" AND seasonality = ["christmas"]
-- "thanksgiving dinner ideas" → sql_search with seasonality = ["thanksgiving"]
-- "diwali recipes without nuts" → sql_search with excluded_ingredients=["nuts"], seasonality=["diwali"]
-- "winter christmas recipes" → sql_search with seasonality = ["winter", "christmas"]
+- "christmas recipes that are easy" → hybrid_search with query="christmas easy recipes", difficulty="easy", seasonality = ["christmas"] (MULTIPLE constraints - use hybrid_search)
+- "thanksgiving dinner ideas" → sql_search with seasonality = ["thanksgiving"] (single constraint)
+- "diwali recipes without nuts" → hybrid_search with query="diwali recipes", excluded_ingredients=["nuts"], seasonality=["diwali"] (MULTIPLE constraints - use hybrid_search)
+- "winter christmas recipes" → sql_search with seasonality = ["winter", "christmas"] (single constraint type, multiple values)
 
 Always return recipe names and descriptions. Do not invent recipes.
   `,

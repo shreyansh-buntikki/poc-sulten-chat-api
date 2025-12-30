@@ -145,6 +145,7 @@ interface RecipeWithSimilarity {
     unit: string;
     order: number;
   }>;
+  meta: string | null;
   recipe_type?: string;
   similarity: number;
   distance: number;
@@ -426,7 +427,7 @@ export async function executeRAGSearch(
     const recipes = await AppDataSource.query(
       `
       SELECT r.id, r.name AS recipe_name, r.slug, r.ingress, r.difficulty, 
-             r.servings, r."prepTime", r."cookTime", r."userUid",
+             r.servings, r."prepTime", r."cookTime", r."userUid", r.meta,
              (COALESCE(r."prepTime", 0) + COALESCE(r."cookTime", 0)) AS total_time,
              (
                SELECT COALESCE(
@@ -516,6 +517,7 @@ export async function executeRAGSearch(
           total_time: recipe.total_time,
           instructions: recipe.instructions || [],
           ingredients: recipe.ingredients || [],
+          meta: (recipe as any).meta || null,
           recipe_type,
           similarity: milvusResult?.similarity || 0,
           distance: milvusResult?.distance || 0,
@@ -594,36 +596,37 @@ export async function executeSQLSearch(
       paramIndex++;
     }
 
-    if (difficulty) {
-      conditions.push(
-        `LOWER(TRIM(r.difficulty)) = LOWER(TRIM($${paramIndex}))`
+    // ✅ ADD: Filter by seasonality at SQL level
+    if (seasonality && seasonality.length > 0) {
+      // Build OR conditions for each seasonality value
+      const seasonalityConditions = seasonality.map((season) => {
+        const normalizedSeason = season.toLowerCase().trim();
+        queryParams.push(normalizedSeason);
+        return `EXISTS (
+          SELECT 1 FROM jsonb_array_elements_text(r.meta::jsonb->'seasonality') AS season
+          WHERE LOWER(TRIM(season)) = $${paramIndex++}
+        )`;
+      });
+
+      // At least one seasonality must match
+      conditions.push(`(${seasonalityConditions.join(" OR ")})`);
+
+      console.log(
+        `[SQLSearch] Added seasonality filter for: ${seasonality.join(", ")}`
       );
-      queryParams.push(difficulty);
-      paramIndex++;
     }
 
-    if (cuisine) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM recipe_tags_tag rtt
-          INNER JOIN tag t ON rtt."tagId" = t.id
-          WHERE rtt."recipeId" = r.id
-            AND LOWER(TRIM(t.name)) = LOWER(TRIM($${paramIndex}))
-        )
-      `);
-      queryParams.push(cuisine);
-      paramIndex++;
-    }
-
-    queryParams.push(limit);
+    const queryLimit =
+      difficulty ||
+      cuisine ||
+      macronutrients ||
+      price_constraints ||
+      seasonality
+        ? limit * 5
+        : limit * 2;
+    queryParams.push(queryLimit);
 
     const whereClause = conditions.join(" AND ");
-
-    // Increase limit if we need to filter/sort by macronutrients, price, or seasonality
-    const queryLimit =
-      macronutrients || price_constraints || seasonality ? limit * 3 : limit;
-    queryParams[queryParams.length - 1] = queryLimit; // Update the limit parameter
 
     const recipes = await AppDataSource.query(
       `
@@ -673,6 +676,35 @@ export async function executeSQLSearch(
     console.log("[SQLSearch] Raw recipes from DB:", recipes.length);
     if (recipes.length > 0) {
       console.log("[SQLSearch] First recipe:", recipes[0]?.recipe_name);
+      if (seasonality && seasonality.length > 0) {
+        console.log(
+          "[SQLSearch] First recipe seasonality:",
+          recipes[0]?.meta ? JSON.parse(recipes[0].meta)?.seasonality : "N/A"
+        );
+      }
+    }
+
+    // Batch query to check which recipes have the cuisine tag (if cuisine is specified)
+    const cuisineTagMap = new Map<string, boolean>();
+    if (cuisine && recipes.length > 0) {
+      const recipeIdsForCuisineCheck = recipes.map((r: any) => r.id);
+      try {
+        const cuisineTagResults = await AppDataSource.query(
+          `
+          SELECT DISTINCT rtt."recipeId"
+          FROM recipe_tags_tag rtt
+          INNER JOIN tag t ON rtt."tagId" = t.id
+          WHERE rtt."recipeId" = ANY($1::uuid[])
+            AND LOWER(TRIM(t.name)) = LOWER(TRIM($2))
+          `,
+          [recipeIdsForCuisineCheck, cuisine]
+        );
+        cuisineTagResults.forEach((row: any) => {
+          cuisineTagMap.set(row.recipeId, true);
+        });
+      } catch (error) {
+        console.error("[SQLSearch] Error checking cuisine tags:", error);
+      }
     }
 
     // Helper function to calculate macronutrient match score
@@ -761,43 +793,7 @@ export async function executeSQLSearch(
       }
     };
 
-    // Helper function to check seasonality
-    const matchesSeasonality = (
-      meta: string | null,
-      seasonality?: string[]
-    ): boolean => {
-      if (!seasonality || seasonality.length === 0 || !meta) return true;
-
-      try {
-        const metaData = JSON.parse(meta);
-        const recipeSeasonality = metaData?.seasonality || [];
-
-        if (
-          !Array.isArray(recipeSeasonality) ||
-          recipeSeasonality.length === 0
-        ) {
-          return true; // No seasonality data, don't filter out
-        }
-
-        // Normalize both arrays to lowercase for comparison
-        const normalizedRecipeSeasons = recipeSeasonality.map((s: string) =>
-          s.toLowerCase().trim()
-        );
-        const normalizedRequestedSeasons = seasonality.map((s: string) =>
-          s.toLowerCase().trim()
-        );
-
-        // Recipe matches if ANY requested seasonality is in the recipe's seasonality
-        return normalizedRequestedSeasons.some((requestedSeason) =>
-          normalizedRecipeSeasons.includes(requestedSeason)
-        );
-      } catch (error) {
-        console.error("[SQLSearch] Error parsing meta for seasonality:", error);
-        return true; // Don't filter out if we can't parse
-      }
-    };
-
-    // Filter and sort recipes based on macronutrients, price constraints, and seasonality
+    // Filter and sort recipes based on constraints, macronutrients, and price
     let filteredRecipes = recipes;
 
     // Filter by price constraints
@@ -805,27 +801,65 @@ export async function executeSQLSearch(
       filteredRecipes = filteredRecipes.filter((r: any) =>
         matchesPriceConstraint(r.meta, price_constraints)
       );
-    }
-
-    // Filter by seasonality
-    if (seasonality && seasonality.length > 0) {
-      filteredRecipes = filteredRecipes.filter((r: any) =>
-        matchesSeasonality(r.meta, seasonality)
+      console.log(
+        `[SQLSearch] After price filter: ${filteredRecipes.length} recipes`
       );
     }
 
-    // Sort by macronutrient match score if macronutrients specified
-    if (macronutrients && Object.keys(macronutrients).length > 0) {
-      filteredRecipes = filteredRecipes
-        .map((r: any) => ({
-          ...r,
-          macroScore: calculateMacroScore(r.meta, macronutrients),
-        }))
-        .sort((a: any, b: any) => b.macroScore - a.macroScore)
-        .slice(0, limit);
-    } else {
-      filteredRecipes = filteredRecipes.slice(0, limit);
-    }
+    // Calculate constraint scores and macro scores for all recipes
+    // Note: Seasonality is already filtered at SQL level, so we don't need to check it here
+    filteredRecipes = filteredRecipes.map((r: any) => {
+      let constraintScore = 0;
+      let totalConstraints = 0;
+
+      // Check difficulty match
+      if (difficulty) {
+        totalConstraints++;
+        const recipeDifficulty = r.difficulty
+          ? r.difficulty.toLowerCase().trim()
+          : "";
+        const requestedDifficulty = difficulty.toLowerCase().trim();
+        if (recipeDifficulty === requestedDifficulty) {
+          constraintScore += 1;
+        }
+      }
+
+      // Check cuisine match using tag map
+      if (cuisine) {
+        totalConstraints++;
+        if (cuisineTagMap.get(r.id)) {
+          constraintScore += 1;
+        }
+      }
+
+      const finalConstraintScore =
+        totalConstraints > 0 ? constraintScore / totalConstraints : 0;
+
+      return {
+        ...r,
+        constraintScore: finalConstraintScore,
+        macroScore: calculateMacroScore(r.meta, macronutrients),
+      };
+    });
+
+    // Sort by constraint score (priority to difficulty/cuisine matches), then macro score, then total_time
+    filteredRecipes = filteredRecipes.sort((a: any, b: any) => {
+      // First sort by constraint score (difficulty + cuisine match) - highest priority
+      if (b.constraintScore !== a.constraintScore) {
+        return b.constraintScore - a.constraintScore;
+      }
+      // Then by macro score if specified
+      if (macronutrients && Object.keys(macronutrients).length > 0) {
+        if (b.macroScore !== a.macroScore) {
+          return b.macroScore - a.macroScore;
+        }
+      }
+      // Finally by total_time (ascending - faster recipes first)
+      return (a.total_time || 0) - (b.total_time || 0);
+    });
+
+    // Take top results
+    filteredRecipes = filteredRecipes.slice(0, limit);
 
     const formattedRecipes = filteredRecipes.map((r: any) => ({
       id: r.id,
@@ -839,6 +873,7 @@ export async function executeSQLSearch(
       total_time: r.total_time,
       instructions: r.instructions || [],
       ingredients: r.ingredients || [],
+      meta: r.meta || null,
     }));
 
     const toolResult = {
@@ -938,27 +973,10 @@ export async function executeHybridSearch(
       paramIndex++;
     }
 
-    if (difficulty) {
-      conditions.push(
-        `LOWER(TRIM(r.difficulty)) = LOWER(TRIM($${paramIndex}))`
-      );
-      queryParams.push(difficulty);
-      paramIndex++;
-    }
-
-    if (cuisine) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM recipe_tags_tag rtt
-          INNER JOIN tag t ON rtt."tagId" = t.id
-          WHERE rtt."recipeId" = r.id
-            AND LOWER(TRIM(t.name)) = LOWER(TRIM($${paramIndex}))
-        )
-      `);
-      queryParams.push(cuisine);
-      paramIndex++;
-    }
+    // Note: For hybrid_search, we don't apply difficulty and cuisine as hard SQL filters
+    // Instead, we apply them as soft filters in post-processing to allow semantic matching
+    // to work even when exact matches don't exist. This makes hybrid_search more flexible.
+    // Only apply time constraints as hard filters since those are critical safety constraints.
 
     // Require included ingredients if specified
     if (included_ingredients && included_ingredients.length > 0) {
@@ -1040,6 +1058,29 @@ export async function executeHybridSearch(
     const milvusMap = new Map<string, MilvusResult>(
       milvusResults.map((r: MilvusResult) => [r.recipe_id, r])
     );
+
+    // Batch query to check which recipes have the cuisine tag (if cuisine is specified)
+    const cuisineTagMap = new Map<string, boolean>();
+    if (cuisine && recipes.length > 0) {
+      const recipeIdsForCuisineCheck = recipes.map((r: RecipeRow) => r.id);
+      try {
+        const cuisineTagResults = await AppDataSource.query(
+          `
+          SELECT DISTINCT rtt."recipeId"
+          FROM recipe_tags_tag rtt
+          INNER JOIN tag t ON rtt."tagId" = t.id
+          WHERE rtt."recipeId" = ANY($1::uuid[])
+            AND LOWER(TRIM(t.name)) = LOWER(TRIM($2))
+          `,
+          [recipeIdsForCuisineCheck, cuisine]
+        );
+        cuisineTagResults.forEach((row: any) => {
+          cuisineTagMap.set(row.recipeId, true);
+        });
+      } catch (error) {
+        console.error("[HybridSearch] Error checking cuisine tags:", error);
+      }
+    }
 
     // Helper function to calculate macronutrient match score (same as SQL search)
     const calculateMacroScore = (
@@ -1200,20 +1241,53 @@ export async function executeHybridSearch(
           return null;
         }
 
-        // Post-filter: Check seasonality
-        if (
-          seasonality &&
-          seasonality.length > 0 &&
-          !matchesSeasonality((recipe as any).meta, seasonality)
-        ) {
-          filteredOutCount++;
-          return null;
-        }
+        // Note: Seasonality is now a soft filter (scoring/ranking) instead of a hard filter
+        // This allows recipes without seasonality data to still be included, but recipes
+        // with matching seasonality will be prioritized.
 
         const macroScore = calculateMacroScore(
           (recipe as any).meta,
           macronutrients
         );
+
+        // Calculate constraint match score for difficulty, cuisine, and seasonality (soft filters)
+        let constraintScore = 0;
+        let constraintMatches = 0;
+        let totalConstraints = 0;
+
+        // Check difficulty match
+        if (difficulty) {
+          totalConstraints++;
+          const recipeDifficulty = recipe.difficulty
+            ? recipe.difficulty.toLowerCase().trim()
+            : "";
+          const requestedDifficulty = difficulty.toLowerCase().trim();
+          if (recipeDifficulty === requestedDifficulty) {
+            constraintScore += 1;
+            constraintMatches++;
+          }
+        }
+
+        // Check cuisine match using tag map
+        if (cuisine) {
+          totalConstraints++;
+          if (cuisineTagMap.get(recipe.id)) {
+            constraintScore += 1;
+            constraintMatches++;
+          }
+        }
+
+        // Check seasonality match
+        if (seasonality && seasonality.length > 0) {
+          totalConstraints++;
+          if (matchesSeasonality((recipe as any).meta, seasonality)) {
+            constraintScore += 1;
+            constraintMatches++;
+          }
+        }
+
+        const finalConstraintScore =
+          totalConstraints > 0 ? constraintScore / totalConstraints : 0;
 
         return {
           id: recipe.id,
@@ -1227,34 +1301,42 @@ export async function executeHybridSearch(
           total_time: recipe.total_time,
           instructions: recipe.instructions || [],
           ingredients: recipe.ingredients || [],
+          meta: (recipe as any).meta || null,
           similarity: milvusResult?.similarity || 0,
           distance: milvusResult?.distance || 0,
           macroScore, // Add macro score for sorting
-        } as RecipeWithSimilarity & { macroScore: number };
+          constraintScore: finalConstraintScore, // Add constraint match score
+        } as RecipeWithSimilarity & {
+          macroScore: number;
+          constraintScore: number;
+        };
       })
       .filter(
         (r: RecipeWithSimilarity | null): r is RecipeWithSimilarity =>
           r !== null
       );
 
-    // Sort by macronutrient match score if specified, then by similarity
-    if (macronutrients && Object.keys(macronutrients).length > 0) {
-      recipesWithSimilarity = (recipesWithSimilarity as any[])
-        .sort((a: any, b: any) => {
-          // First sort by macro score (descending)
+    // Sort by constraint match score, then macro score, then similarity
+    // This prioritizes recipes that match difficulty/cuisine constraints
+    recipesWithSimilarity = (recipesWithSimilarity as any[]).sort(
+      (a: any, b: any) => {
+        // First sort by constraint score (difficulty + cuisine match)
+        if (b.constraintScore !== a.constraintScore) {
+          return b.constraintScore - a.constraintScore;
+        }
+        // Then by macro score if specified
+        if (macronutrients && Object.keys(macronutrients).length > 0) {
           if (b.macroScore !== a.macroScore) {
             return b.macroScore - a.macroScore;
           }
-          // Then by similarity (descending)
-          return (b.similarity || 0) - (a.similarity || 0);
-        })
-        .slice(0, limit);
-    } else {
-      // Sort by similarity only
-      recipesWithSimilarity = recipesWithSimilarity
-        .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
-        .slice(0, limit);
-    }
+        }
+        // Finally by similarity (descending)
+        return (b.similarity || 0) - (a.similarity || 0);
+      }
+    );
+
+    // Take top results
+    recipesWithSimilarity = recipesWithSimilarity.slice(0, limit);
 
     return {
       recipes: recipesWithSimilarity,

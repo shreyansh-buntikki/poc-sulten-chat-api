@@ -389,7 +389,7 @@ export class LlmService {
     }
   }
 
-  async generateEphemeralToken(model?: string) {
+  async generateEphemeralToken() {
     try {
       const response = await this.openai.beta.realtime.sessions.create({
         model: 'gpt-4o-mini-realtime-preview-2024-12-17',

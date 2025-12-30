@@ -208,6 +208,41 @@ Do NOT search for or invent any new recipes, and do NOT invent new ingredients t
     } else {
       // Normal path: run the OpenAI agent which chooses sql/rag/hybrid tools.
       result = await runRecipeAgent(message);
+
+      // Fallback: If sql_search returned 0 results, retry with hybrid_search
+      // This handles cases where multiple constraints (e.g., difficulty + cuisine)
+      // are too restrictive for exact SQL matching
+      if (
+        result.noResults &&
+        result.toolUsed === "sql_search" &&
+        result.recipes.length === 0
+      ) {
+        console.log(
+          "[RecipeSearchService] sql_search returned 0 results, retrying with hybrid_search as fallback"
+        );
+        // Retry with hybrid_search - explicitly request semantic search with constraints
+        // This helps the agent understand to use hybrid_search instead of sql_search
+        const fallbackQuery = `Find recipes matching: ${message}. Use semantic similarity search to find similar recipes even if exact matches don't exist.`;
+        const fallbackResult = await runRecipeAgent(fallbackQuery);
+
+        // Only use fallback if it found recipes and used hybrid_search
+        if (
+          !fallbackResult.noResults &&
+          fallbackResult.recipes.length > 0 &&
+          (fallbackResult.toolUsed === "hybrid_search" ||
+            fallbackResult.toolUsed === "rag_search")
+        ) {
+          console.log(
+            `[RecipeSearchService] Fallback ${fallbackResult.toolUsed} found ${fallbackResult.recipes.length} recipes`
+          );
+          result = fallbackResult;
+        } else {
+          console.log(
+            `[RecipeSearchService] Fallback search returned ${fallbackResult.recipes.length} results (tool: ${fallbackResult.toolUsed})`
+          );
+        }
+      }
+
       context = OllamaRAGService.buildRecipeContext(result.recipes);
       recipesForContext = result.recipes;
     }

@@ -88,6 +88,7 @@ export class RecipeSearchService {
         : String(lastAIMessage.content)
       : null;
 
+    // 1) Topic check – ensure this is still about food / cooking
     const topicCheckPrompt = lastAIContent
       ? `You are checking if a conversation is about food/recipes/cooking.
     
@@ -138,17 +139,87 @@ export class RecipeSearchService {
       };
     }
 
-    const result = await runRecipeAgent(message);
-    console.log("result from recipe agent", { result });
+    // 2) Decide via LLM whether this is a follow-up about previous recipes
+    //    or a request for new recipes.
+    let usePreviousContext = false;
+
+    if (lastAIContent) {
+      const followUpPrompt = `You previously answered the user with this message:
+\"\"\"${lastAIContent}\"\"\"
+
+Now the user says:
+\"\"\"${message}\"\"\"
+
+You are Sulten, a cooking assistant.
+
+If the user is asking for MORE DETAILS about one or more of the recipes you already mentioned
+(for example asking for ingredients, cooking steps, instructions, or saying things like
+"how do I cook it", "tell me more about it", "what are the ingredients"),
+then reply ONLY with the single word: FOLLOW_UP
+
+If the user is instead asking for NEW recipes or something different
+(for example a different mood, different constraints, or clearly new suggestions),
+then reply ONLY with the single word: NEW_SEARCH
+
+Answer strictly with one word: FOLLOW_UP or NEW_SEARCH.`;
+
+      const followUpResponse = await llmService.chatOpenAI(
+        "",
+        followUpPrompt,
+        []
+      );
+      const followUpResult =
+        followUpResponse.choices?.[0]?.message?.content?.trim().toUpperCase() ??
+        "";
+
+      usePreviousContext = followUpResult === "FOLLOW_UP";
+    }
+
+    // 3) Either reuse previous assistant context or run a new agent search
+    let result:
+      | {
+          recipes: any[];
+          noResults: boolean;
+          toolUsed?: string;
+          result?: any;
+        }
+      | undefined;
 
     const ragService = new OllamaRAGService();
-    const context = OllamaRAGService.buildRecipeContext(result.recipes);
+    let context: string;
+    let recipesForContext: any[];
+
+    if (usePreviousContext && lastAIContent) {
+      // Do NOT run a new search. Use the last assistant message as context.
+      // The formatter prompt will strictly forbid creating new recipes/ingredients.
+      result = {
+        recipes: [],
+        noResults: false,
+        toolUsed: "previous_context",
+        result: null,
+      };
+
+      context = `Previously suggested recipes and explanations:
+${lastAIContent}
+
+Use ONLY the recipes and information mentioned above when answering the user's follow-up question.
+Do NOT search for or invent any new recipes, and do NOT invent new ingredients that were not mentioned before.`;
+      recipesForContext = [];
+    } else {
+      // Normal path: run the OpenAI agent which chooses sql/rag/hybrid tools.
+      result = await runRecipeAgent(message);
+      context = OllamaRAGService.buildRecipeContext(result.recipes);
+      recipesForContext = result.recipes;
+    }
+
+    console.log("recipesForContext", recipesForContext.length, result.recipes.length);
+
     const ragResult = {
-      similarRecipes: result.recipes,
+      similarRecipes: recipesForContext,
       context,
       userIngredients: [],
       similarRecipesFromMilvus: [],
-      recipes: result.recipes,
+      recipes: recipesForContext,
       timeToGenerateEmbedding: 0,
       timeToQuery: 0,
     };

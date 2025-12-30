@@ -163,17 +163,14 @@ export class UserController {
 
   static async getRecipes(req: Request, res: Response) {
     try {
-      console.log("call received", req.params.userId);
       const { query } = req.body;
       const { userId } = req.params;
 
-      console.log({ query, userId });
       const result = await RecipeSearchService.getRecipes(
         query,
         userId ?? "00DLyaukerYEGpYXYF3ALnSJc0a2"
       );
 
-      console.log(result.recipes);
       return res.status(200).json(result);
     } catch (error) {
       console.log(error);

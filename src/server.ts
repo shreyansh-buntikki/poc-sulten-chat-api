@@ -8,6 +8,9 @@ import { MilvusService } from "./services/milvus.service";
 
 dotenv.config();
 
+// Disable OpenAI agents SDK tracing to avoid 503 errors
+process.env.OPENAI_TRACING_DISABLED = "true";
+
 const devAllowAll = true;
 
 const app = express();

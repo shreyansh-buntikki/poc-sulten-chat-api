@@ -1,8 +1,8 @@
 import { DataType, MilvusClient } from "@zilliz/milvus2-sdk-node";
 
 export type SimpleIntent = {
-  required_ingredients: string[];
-  excluded_ingredients: string[];
+  required_ingredients?: string[];
+  excluded_ingredients?: string[];
 };
 export class MilvusService {
   private client: MilvusClient;
@@ -88,11 +88,11 @@ export class MilvusService {
   async buildMilvusFilter(intent: SimpleIntent) {
     const parts: string[] = [];
 
-    for (const ing of intent.excluded_ingredients) {
+    for (const ing of intent.excluded_ingredients || []) {
       parts.push(`ingredients not_contains "${ing.toLowerCase()}"`);
     }
 
-    for (const ing of intent.required_ingredients) {
+    for (const ing of intent.required_ingredients || []) {
       parts.push(`ingredients contains "${ing.toLowerCase()}"`);
     }
 

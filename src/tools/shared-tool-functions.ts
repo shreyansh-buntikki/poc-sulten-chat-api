@@ -341,20 +341,11 @@ export const toolDefinitions = {
 export async function executeRAGSearch(
   args: RAGSearchArgs
 ): Promise<ToolResult> {
-  console.log("=".repeat(80));
-  console.log("[RAGSearch] Tool called - Received arguments:");
-  console.log(JSON.stringify(args, null, 2));
-  console.log("=".repeat(80));
+  console.log(
+    "[RAGSearch] Tool called - Arguments:",
+    JSON.stringify(args, null, 2)
+  );
   try {
-    console.log("[RAGSearch] Parsed args:");
-    console.log("  - query:", args.query);
-    console.log("  - excluded_ingredients:", args.excluded_ingredients);
-    console.log("  - included_ingredients:", args.included_ingredients);
-    console.log("  - max_time_minutes:", args.max_time_minutes);
-    console.log("  - difficulty:", args.difficulty);
-    console.log("  - userUid:", args.userUid);
-    console.log("  - limit:", args.limit);
-
     const ollama = new OllamaService();
     const milvus = new MilvusService();
 
@@ -364,7 +355,12 @@ export async function executeRAGSearch(
     // We handle excluded_ingredients filtering in post-processing instead
     const milvusResults = await milvus.searchSimilarRecipes(
       queryEmbedding,
-      Math.max((args.limit || 10) * 3, 50)
+      Math.max((args.limit || 10) * 3, 50),
+      {
+        excluded_ingredients: args.excluded_ingredients || [],
+       required_ingredients: args.included_ingredients || [],
+        
+      }
       // No intent passed - filtering done in post-processing
     );
 
@@ -539,10 +535,10 @@ export async function executeRAGSearch(
 export async function executeSQLSearch(
   args: SqlSearchArgs
 ): Promise<ToolResult> {
-  console.log("=".repeat(80));
-  console.log("[SQLSearch] Tool called - Received arguments:");
-  console.log(JSON.stringify(args, null, 2));
-  console.log("=".repeat(80));
+  console.log(
+    "[SQLSearch] Tool called - Arguments:",
+    JSON.stringify(args, null, 2)
+  );
   try {
     const {
       excluded_ingredients = [],
@@ -554,15 +550,6 @@ export async function executeSQLSearch(
       macronutrients,
       price_constraints,
     } = args;
-    console.log("[SQLSearch] Parsed args:");
-    console.log("  - excluded_ingredients:", excluded_ingredients);
-    console.log("  - included_ingredients:", included_ingredients);
-    console.log("  - max_time_minutes:", max_time_minutes);
-    console.log("  - difficulty:", difficulty);
-    console.log("  - cuisine:", cuisine);
-    console.log("  - limit:", limit);
-    console.log("  - macronutrients:", macronutrients);
-    console.log("  - price_constraints:", price_constraints);
 
     const conditions: string[] = [
       `r.status = 'published'`,
@@ -618,9 +605,6 @@ export async function executeSQLSearch(
     queryParams.push(limit);
 
     const whereClause = conditions.join(" AND ");
-
-    console.log("[SQLSearch] Executing query with whereClause:", whereClause);
-    console.log("[SQLSearch] Query params:", JSON.stringify(queryParams));
 
     // Increase limit if we need to filter/sort by macronutrients or price
     const queryLimit = macronutrients || price_constraints ? limit * 3 : limit;
@@ -770,11 +754,6 @@ export async function executeSQLSearch(
       filteredRecipes = filteredRecipes.filter((r: any) =>
         matchesPriceConstraint(r.meta, price_constraints)
       );
-      console.log(
-        "[SQLSearch] After price filter:",
-        filteredRecipes.length,
-        "recipes"
-      );
     }
 
     // Sort by macronutrient match score if macronutrients specified
@@ -786,13 +765,6 @@ export async function executeSQLSearch(
         }))
         .sort((a: any, b: any) => b.macroScore - a.macroScore)
         .slice(0, limit);
-      console.log(
-        "[SQLSearch] Sorted by macronutrient match, top scores:",
-        filteredRecipes.slice(0, 3).map((r: any) => ({
-          name: r.recipe_name,
-          score: r.macroScore,
-        }))
-      );
     } else {
       filteredRecipes = filteredRecipes.slice(0, limit);
     }
@@ -810,15 +782,6 @@ export async function executeSQLSearch(
       instructions: r.instructions || [],
       ingredients: r.ingredients || [],
     }));
-
-    console.log(
-      "[SQLSearch] Formatted recipes count:",
-      formattedRecipes.length
-    );
-    console.log(
-      "[SQLSearch] Returning tool result with recipes:",
-      formattedRecipes.length > 0 ? "YES" : "NO"
-    );
 
     const toolResult = {
       recipes: formattedRecipes,
@@ -839,21 +802,6 @@ export async function executeSQLSearch(
       },
     };
 
-    console.log(
-      "[SQLSearch] Tool result structure:",
-      JSON.stringify(toolResult, null, 2)
-    );
-    console.log(
-      "[SQLSearch] Tool result.recipes length:",
-      toolResult.recipes.length
-    );
-    if (toolResult.recipes.length > 0) {
-      console.log(
-        "[SQLSearch] Tool result.recipes[0]:",
-        JSON.stringify(toolResult.recipes[0], null, 2)
-      );
-    }
-
     return toolResult;
   } catch (error) {
     console.error("[sql_search] Error:", error);
@@ -871,10 +819,10 @@ export async function executeSQLSearch(
 export async function executeHybridSearch(
   args: HybridSearchArgs
 ): Promise<ToolResult> {
-  console.log("=".repeat(80));
-  console.log("[HybridSearch] Tool called - Received arguments:");
-  console.log(JSON.stringify(args, null, 2));
-  console.log("=".repeat(80));
+  console.log(
+    "[HybridSearch] Tool called - Arguments:",
+    JSON.stringify(args, null, 2)
+  );
   try {
     const {
       query,
@@ -888,25 +836,10 @@ export async function executeHybridSearch(
       macronutrients,
     } = args;
 
-    console.log("[HybridSearch] Parsed args:");
-    console.log("  - query:", query);
-    console.log("  - excluded_ingredients:", excluded_ingredients);
-    console.log("  - included_ingredients:", included_ingredients);
-    console.log("  - max_time_minutes:", max_time_minutes);
-    console.log("  - difficulty:", difficulty);
-    console.log("  - cuisine:", cuisine);
-    console.log("  - limit:", limit);
-    console.log("  - price_constraints:", price_constraints);
-    console.log("  - macronutrients:", macronutrients);
-
     const ollama = new OllamaService();
     const milvus = new MilvusService();
 
     const queryEmbedding = await ollama.embed(query);
-    console.log(
-      "[HybridSearch] Generated embedding, length:",
-      queryEmbedding.length
-    );
 
     // Don't filter excluded_ingredients at Milvus level - it's too restrictive
     // We handle excluded_ingredients filtering in post-processing instead
@@ -917,14 +850,7 @@ export async function executeHybridSearch(
       // No intent passed - filtering done in post-processing
     );
 
-    console.log(
-      "[HybridSearch] Milvus returned:",
-      milvusResults.length,
-      "results"
-    );
-
     if (milvusResults.length === 0) {
-      console.log("[HybridSearch] No Milvus results, returning empty");
       return {
         recipes: [],
         count: 0,
@@ -992,10 +918,6 @@ export async function executeHybridSearch(
         )
       `);
       paramIndex += included_ingredients.length;
-      console.log(
-        "[HybridSearch] Added included_ingredients filter:",
-        included_ingredients
-      );
     }
 
     // Increase limit if we need to filter/sort by macronutrients or price
@@ -1047,12 +969,6 @@ export async function executeHybridSearch(
       LIMIT $${paramIndex}
       `,
       queryParams
-    );
-
-    console.log(
-      "[HybridSearch] SQL returned:",
-      recipes.length,
-      "recipes from DB"
     );
 
     const recipeMap = new Map<string, RecipeRow>(
@@ -1170,11 +1086,6 @@ export async function executeHybridSearch(
           hasExcludedIngredient(recipe.ingredients, excluded_ingredients)
         ) {
           filteredOutCount++;
-          console.log(
-            "[HybridSearch] Filtered out recipe:",
-            recipe.recipe_name,
-            "- has excluded ingredient"
-          );
           return null;
         }
 
@@ -1184,11 +1095,6 @@ export async function executeHybridSearch(
           !matchesPriceConstraint((recipe as any).meta, price_constraints)
         ) {
           filteredOutCount++;
-          console.log(
-            "[HybridSearch] Filtered out recipe:",
-            recipe.recipe_name,
-            "- price constraint not met"
-          );
           return null;
         }
 
@@ -1231,28 +1137,12 @@ export async function executeHybridSearch(
           return (b.similarity || 0) - (a.similarity || 0);
         })
         .slice(0, limit);
-      console.log(
-        "[HybridSearch] Sorted by macronutrient match, top scores:",
-        recipesWithSimilarity.slice(0, 3).map((r: any) => ({
-          name: r.recipe_name,
-          macroScore: r.macroScore,
-          similarity: r.similarity,
-        }))
-      );
     } else {
       // Sort by similarity only
       recipesWithSimilarity = recipesWithSimilarity
         .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
         .slice(0, limit);
     }
-
-    console.log(
-      "[HybridSearch] Final result:",
-      recipesWithSimilarity.length,
-      "recipes (filtered out:",
-      filteredOutCount,
-      ")"
-    );
 
     return {
       recipes: recipesWithSimilarity,

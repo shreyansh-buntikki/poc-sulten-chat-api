@@ -20,12 +20,16 @@ export class OllamaService {
 
   async embed(text: string): Promise<number[]> {
     try {
+      // Use text-embedding-3-small with dimension=768 to match existing Milvus collection
+      // The collection was created with 768 dimensions, so we need to match that
       const response = await this.openai.embeddings.create({
         model: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
         input: text,
+        dimensions: 768, // Match the existing Milvus collection dimension
       });
-      console.log('embedding response', response.data[0].embedding);
-      return response.data[0].embedding;
+      const embedding = response.data[0].embedding;
+      console.log(`[Embedding] Generated ${embedding.length}-dimensional embedding`);
+      return embedding;
     } catch (error) {
       throw new Error(
         `OpenAI embeddings error: ${

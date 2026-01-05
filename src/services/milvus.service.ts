@@ -7,6 +7,7 @@ export type SimpleIntent = {
 export class MilvusService {
   private client: MilvusClient;
   private collectionName = "sulten_embeddings";
+  // Milvus collection uses 768-dimensional embeddings
   private dimension = 768;
 
   getCollectionName(): string {
@@ -167,7 +168,25 @@ export class MilvusService {
       });
 
       if (!hasCollection.value) {
+        console.error(`[MILVUS] Collection "${this.collectionName}" does not exist`);
         return [];
+      }
+
+      // Check collection stats to see if it has data
+      try {
+        const stats = await this.client.getCollectionStatistics({
+          collection_name: this.collectionName,
+        });
+        // StatisticsResponse structure may vary - access row_count safely
+        const rowCount = (stats as any).row_count || (stats as any).stats?.row_count || 0;
+        console.log(`[MILVUS] Collection "${this.collectionName}" has ${rowCount} rows`);
+        if (rowCount === 0) {
+          console.error(`[MILVUS] Collection "${this.collectionName}" is empty - no recipes indexed`);
+          return [];
+        }
+      } catch (statsError) {
+        console.warn(`[MILVUS] Could not get collection stats:`, statsError);
+        // Continue anyway - collection might still work
       }
 
       // Ensure collection is loaded
@@ -175,14 +194,27 @@ export class MilvusService {
         await this.client.loadCollection({
           collection_name: this.collectionName,
         });
-      } catch {
-        // It's okay if already loaded
+        console.log(`[MILVUS] Collection "${this.collectionName}" loaded`);
+      } catch (loadError: any) {
+        // It's okay if already loaded, but log other errors
+        if (loadError?.message && !loadError.message.includes("already loaded")) {
+          console.warn(`[MILVUS] Error loading collection:`, loadError.message);
+        }
       }
 
       let filterExpr: string | undefined;
 
       if (intent) {
         filterExpr = await this.buildMilvusFilter(intent);
+        console.log(`[MILVUS] Using filter expression: ${filterExpr}`);
+      }
+
+      // Validate embedding dimension
+      if (!queryEmbedding || queryEmbedding.length !== this.dimension) {
+        console.error(
+          `[MILVUS] Invalid embedding dimension: expected ${this.dimension}, got ${queryEmbedding?.length || 0}`
+        );
+        return [];
       }
 
       const searchParams = {
@@ -200,8 +232,14 @@ export class MilvusService {
         filter: filterExpr || undefined,
       };
 
+      console.log(`[MILVUS] Searching with limit: ${limit}, filter: ${filterExpr || "none"}`);
       const res = await this.client.search(searchParams);
       const hits = res.results ?? [];
+      console.log(`[MILVUS] Search returned ${hits.length} hits`);
+
+      if (hits.length === 0 && res.results) {
+        console.warn(`[MILVUS] Search returned empty results array. Full response:`, JSON.stringify(res, null, 2));
+      }
 
       return hits.map((hit: any) => ({
         recipe_id: hit.recipe_id,
@@ -211,6 +249,9 @@ export class MilvusService {
       }));
     } catch (error) {
       console.error("[MILVUS] Error searching:", error);
+      if (error instanceof Error) {
+        console.error("[MILVUS] Error details:", error.message, error.stack);
+      }
       throw error;
     }
   }

@@ -589,6 +589,16 @@ export async function executeSQLSearch(
       paramIndex++;
     }
 
+    // ✅ ADD: Filter by difficulty at SQL level
+    if (difficulty) {
+      conditions.push(
+        `LOWER(TRIM(r.difficulty)) = LOWER(TRIM($${paramIndex}))`
+      );
+      queryParams.push(difficulty);
+      paramIndex++;
+      console.log(`[SQLSearch] Added difficulty filter at SQL level for: ${difficulty}`);
+    }
+
     // ✅ ADD: Filter by seasonality at SQL level
     if (seasonality && seasonality.length > 0) {
       // Build OR conditions for each seasonality value
@@ -962,7 +972,25 @@ export async function executeHybridSearch(
       // No intent passed - filtering done in post-processing
     );
 
+    // If Milvus returns 0 results but we have hard constraints (cuisine, difficulty),
+    // fallback to SQL search which can find recipes using exact filters
     if (milvusResults.length === 0) {
+      console.log(`[HybridSearch] Milvus returned 0 results, checking if we should fallback to SQL search`);
+      if (cuisine || difficulty || max_time_minutes) {
+        console.log(`[HybridSearch] Falling back to SQL search due to hard constraints`);
+        // Fallback to SQL search with the same constraints
+        return await executeSQLSearch({
+          difficulty: difficulty,
+          cuisine: cuisine,
+          max_time_minutes: max_time_minutes,
+          excluded_ingredients: excluded_ingredients,
+          included_ingredients: included_ingredients,
+          limit: limit,
+          price_constraints: price_constraints,
+          macronutrients: macronutrients,
+          seasonality: seasonality,
+        });
+      }
       return {
         recipes: [],
         count: 0,

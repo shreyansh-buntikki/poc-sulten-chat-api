@@ -37,59 +37,54 @@ export class OllamaRAGService {
 
   /**
    * Build context string from recipes array (reusable for agent results)
+   * Limits to top 6 recipes to avoid context overload while keeping ingredients/instructions
    */
   static buildRecipeContext(recipes: any[]): string {
-    let context =
-      "\n## Most Relevant Recipes (Retrieved via Semantic Search):\n";
+    if (recipes.length === 0) {
+      return "No recipes found matching your request.\n";
+    }
 
-    if (recipes.length > 0) {
-      recipes.forEach((r: any, idx: number) => {
-        const total = (r.prepTime || 0) + (r.cookTime || 0);
-        const similarityPercent = r.similarity
-          ? (r.similarity * 100).toFixed(0)
-          : "N/A";
-        const typeLabel =
-          r.recipe_type === "owned"
-            ? "(Your Recipe)"
-            : r.recipe_type === "liked"
-            ? "(Liked)"
-            : "";
-        const recipeUrl = `https://sulten.app/en/recipes/${
-          r.slug || "no-slug"
-        }`;
-        context += `${idx + 1}. Recipe Name: "${
-          r.recipe_name
-        }" ${typeLabel} (${similarityPercent}% match)\n`;
-        context += `   URL: ${recipeUrl}\n`;
-        context += `   ${r.ingress || "No description"}\n`;
-        context += `   ${r.difficulty || "N/A"} difficulty | ${
-          total ? total + " min" : "Time N/A"
-        }\n`;
+    // Limit to top 6 recipes to optimize context size
+    const limitedRecipes = recipes.slice(0, 6);
+    let context = "";
 
-        const ingredients = Array.isArray(r.ingredients) ? r.ingredients : [];
-        if (ingredients.length > 0) {
-          context += `   Ingredients:\n`;
-          ingredients.forEach((ing: any) => {
+    limitedRecipes.forEach((r: any, idx: number) => {
+      const total = (r.prepTime || 0) + (r.cookTime || 0);
+      const recipeUrl = `https://sulten.app/en/recipes/${r.slug || "no-slug"}`;
+      
+      context += `${idx + 1}. **${r.recipe_name}**\n`;
+      context += `   URL: ${recipeUrl}\n`;
+      if (r.ingress) {
+        context += `   ${r.ingress}\n`;
+      }
+      context += `   ${r.difficulty || "N/A"} | ${total ? total + " min" : "N/A"}\n`;
+
+      // Include ingredients (essential for answering questions)
+      const ingredients = Array.isArray(r.ingredients) ? r.ingredients : [];
+      if (ingredients.length > 0) {
+        context += `   Ingredients: `;
+        const ingredientList = ingredients
+          .map((ing: any) => {
             const amount = ing.amount ? `${ing.amount} ` : "";
             const unit = ing.unit ? `${ing.unit} ` : "";
-            context += `     - ${amount}${unit}${ing.name}\n`;
-          });
-        }
+            return `${amount}${unit}${ing.name}`.trim();
+          })
+          .join(", ");
+        context += `${ingredientList}\n`;
+      }
 
-        const steps = Array.isArray(r.instructions) ? r.instructions : [];
-        if (steps.length > 0) {
-          context += `   Instructions:\n`;
-          steps.forEach((s: any, si: number) => {
-            if (s?.description) {
-              context += `     ${si + 1}. ${s.description}\n`;
-            }
-          });
-        }
-        context += `\n`;
-      });
-    } else {
-      context += "No recipes found matching your request.\n";
-    }
+      // Include instructions (essential for answering questions)
+      const steps = Array.isArray(r.instructions) ? r.instructions : [];
+      if (steps.length > 0) {
+        context += `   Instructions:\n`;
+        steps.forEach((s: any, si: number) => {
+          if (s?.description) {
+            context += `     ${si + 1}. ${s.description}\n`;
+          }
+        });
+      }
+      context += `\n`;
+    });
 
     return context;
   }
@@ -288,55 +283,23 @@ export class OllamaRAGService {
 
     const systemPrompt =
       ragResult.similarRecipes.length > 0
-        ? `You are **Sulten**, a friendly and knowledgeable cooking assistant.
-Your job is to help users with recipes, ingredients, and cooking tips based only on the recipes listed below or in the provided conversation context.
+        ? `You are **Sulten**, a friendly cooking assistant. The user asked: "${message}"
 
-### 🎯 Your Behavior
-- Be warm, conversational, and concise — like talking to a home cook friend.
-- Never invent new recipes. Only refer to the recipes from the "Most Relevant Recipes" list or those explicitly mentioned in the previous conversation.
-- When explaining, speak naturally and clearly. Avoid sounding robotic or repetitive.
-- If the user seems unsure, guide them gently ("You could try…" / "A great option might be…").
+**CRITICAL RULES:**
+1. **ABSOLUTE TRUST**: The recipes below were pre-filtered by our system to match the user's query. If the user asks for "Italian recipes" and recipes are listed, they ARE Italian - even if the names don't sound Italian. Present them as matching the user's request.
+2. **NEVER say "I don't have X recipes"**: When recipes are provided below, they match the user's query. Say "Here are some [cuisine/type] recipes" or "Here are recipes that match your request" - never say you don't have them.
+3. **Always recommend**: ALWAYS recommend 3-4 recipes from the list below (or all if fewer than 3). Present them confidently as matching what the user asked for.
+4. **Dietary restrictions only**: Only apply strict filtering for explicit dietary restrictions (vegan, vegetarian, gluten-free, no dairy). Check ingredients carefully for these.
+5. **No hallucinations**: Only use recipe names, ingredients, and instructions from the recipes below. Never invent new recipes or modify existing ones.
+6. **Answer questions**: Use the ingredients and instructions from the recipes below to answer user questions about how to cook, what ingredients are needed, etc.
 
-### 🚫 Recipe Filtering (CRITICAL)
-- ONLY recommend recipes that FULLY match the user's dietary requirements or constraints.
-- If the user specifies dietary restrictions (vegan, vegetarian, gluten-free, no dairy, etc.), carefully check the recipe ingredients.
-- DO NOT suggest a recipe and then say "just remove X ingredient" or "substitute Y" — if a recipe doesn't fit, simply don't include it.
-- If NONE of the recipes below match the user's requirements, honestly say "I couldn't find a recipe that matches your requirements" rather than suggesting unsuitable recipes with modifications.
+**FORMATTING:**
+- Recipe names as hyperlinks: [**Recipe Name**](EXACT_URL_FROM_RECIPE)
+- Use numbered steps for instructions
+- Be conversational and helpful
 
-### 🚫 Absolutely No Hallucinations (IMPORTANT)
-- Do NOT create new recipe names that are not present in the provided recipes or conversation context.
-- Do NOT invent new ingredients, quantities, or steps that are not supported by the recipe data or clearly stated in the conversation.
-- If the user asks for ingredients or steps and that information is not available in the provided recipes or context, say:
-  "I don't have the exact ingredients or steps for that recipe in my current context. Please open the recipe link for full details."
-  instead of making anything up.
-
-### 📋 Recipe Recommendation Rules (IMPORTANT)
-- **ALWAYS recommend 3-4 recipes** unless the user asks for a specific recipe by name (e.g., "show me the recipe for Thaiwrap").
-- If the user asks for a specific recipe, you can recommend just that one.
-- If the user asks for "a recipe" or "something to cook" or similar general queries, recommend 3-4 recipes from the list below.
-- Prioritize recipes with higher similarity scores (they match the user's query better).
-- If you have fewer than 3 recipes available, recommend all available recipes.
-
-### 🧾 Response Guidelines
-- When the user asks for a recipe, ingredients, or how to cook something, use the **recipes below**.
-- If a recipe includes step-by-step instructions, list them clearly using numbered steps.
-- Prefer recipes with higher similarity scores (they match the user's query better).
-- Mention why a recipe fits ("This matches your ingredients well" or "This is similar to what you liked before").
-
-### ✨ Formatting Rules
-- Use **Markdown** formatting.
-- Recipe names MUST be hyperlinks. Use the EXACT URL provided for each recipe - DO NOT create your own URL.
-- Format: [**Recipe Name**](EXACT_URL_FROM_RECIPE)
-- Example: If recipe shows "URL: https://sulten.app/en/recipes/thaiwrap", link as [**Thaiwrap**](https://sulten.app/en/recipes/thaiwrap)
-- NEVER modify or slugify the URL yourself - copy it exactly as provided.
-- Use bullet points (–) for lists and numbered steps (1. 2. 3.) for instructions.
-- Use > for short cooking tips or notes.
-- Do not include serving counts or irrelevant metadata.
-
-### 📚 Most Relevant Recipes
-${ragResult.context}
-
-💡 Always choose responses from the recipes above. Do not create or name any new recipe yourself.`
+**RECIPES (These match the user's query):**
+${ragResult.context}`
         : NO_RECIPES_FOUND_MESSAGE + "${message}";
 
     const lc = new LangchainChatService();

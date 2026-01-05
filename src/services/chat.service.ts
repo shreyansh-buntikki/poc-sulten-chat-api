@@ -133,7 +133,7 @@ export class ChatService {
   }
 
   /**
-   * Get chat history for a user
+   * Get chat history for a user by username
    */
   static async getChatHistory(username: string) {
     const user = await AppDataSource.query(
@@ -144,14 +144,53 @@ export class ChatService {
       throw new Error("User not found");
     }
     const userUid = user[0].uid;
+    
+    // Ensure userUid is a string and trim any whitespace
+    const normalizedUserId = String(userUid).trim();
 
+    return await ChatService.getChatHistoryByUserId(normalizedUserId, username);
+  }
+
+  /**
+   * Get chat history for a user by userId
+   */
+  static async getChatHistoryByUserId(userId: string, username?: string) {
+    // Normalize userId to ensure consistent string format
+    const normalizedUserId = String(userId).trim();
+    
     const lc = new LangchainChatService();
-    const previousMessages = await lc.getPreviousMessages(userUid);
+    
+    // First, try to get messages using userId
+    let previousMessages = await lc.getPreviousMessages(normalizedUserId);
+    
+    // If no messages found and username is provided, check if messages exist under username key
+    // This handles the case where messages were saved with username instead of userId
+    if (previousMessages.length === 0 && username) {
+      const normalizedUsername = String(username).trim();
+      const usernameMessages = await lc.getPreviousMessages(normalizedUsername);
+      
+      if (usernameMessages.length > 0) {
+        // Use messages from username key (they were saved there previously)
+        previousMessages = usernameMessages;
+      }
+    }
+    
+    // Format messages to be readable
+    const formattedMessages = previousMessages.map((m: any) => {
+      const role = m._getType() === "human" ? "user" : "assistant";
+      const content =
+        typeof m.content === "string" ? m.content : String(m.content);
+      return {
+        role,
+        content,
+      };
+    });
 
     return {
-      username,
-      userUid,
-      previousMessages,
+      userId: normalizedUserId,
+      username: username || null,
+      previousMessages: formattedMessages,
+      count: formattedMessages.length,
     };
   }
 }

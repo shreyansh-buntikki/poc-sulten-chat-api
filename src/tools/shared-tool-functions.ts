@@ -346,13 +346,6 @@ export const toolDefinitions = {
   },
 };
 
-// ============================================================================
-// Core Tool Functions
-// ============================================================================
-
-/**
- * RAG Search - Uses vector similarity search with optional SQL filters
- */
 export async function executeRAGSearch(
   args: RAGSearchArgs
 ): Promise<ToolResult> {

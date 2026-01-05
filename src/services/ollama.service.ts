@@ -1,3 +1,5 @@
+import OpenAI from "openai";
+
 type OllamaChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -6,27 +8,31 @@ type OllamaChatMessage = {
 export class OllamaService {
   private baseUrl: string;
   private chatModel: string;
-  private embedModel: string;
+  private openai: OpenAI;
 
   constructor() {
     this.baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
     this.chatModel = process.env.OLLAMA_CHAT_MODEL || "gemma3:latest";
-    this.embedModel =
-      process.env.OLLAMA_EMBED_MODEL || "nomic-embed-text:latest";
+    this.openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
   }
 
   async embed(text: string): Promise<number[]> {
-    const res = await fetch(`${this.baseUrl}/api/embeddings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.embedModel, prompt: text }),
-    });
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Ollama embeddings error: ${res.status} ${errText}`);
+    try {
+      const response = await this.openai.embeddings.create({
+        model: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
+        input: text,
+      });
+      console.log('embedding response', response.data[0].embedding);
+      return response.data[0].embedding;
+    } catch (error) {
+      throw new Error(
+        `OpenAI embeddings error: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
     }
-    const json = (await res.json()) as { embedding: number[] };
-    return json.embedding;
   }
 
   async chat(messages: OllamaChatMessage[]): Promise<string> {

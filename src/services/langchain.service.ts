@@ -18,7 +18,10 @@ export class LangchainChatService {
   }
 
   getMemoryFor(userUid: string): ConversationTokenBufferMemory {
-    let mem = LangchainChatService.instances.get(userUid);
+    // Normalize userUid to ensure consistent string matching
+    const normalizedUid = String(userUid).trim();
+    
+    let mem = LangchainChatService.instances.get(normalizedUid);
     if (!mem) {
       mem = new ConversationTokenBufferMemory({
         llm: this.llm,
@@ -27,13 +30,16 @@ export class LangchainChatService {
         inputKey: "input",
         outputKey: "output",
       });
-      LangchainChatService.instances.set(userUid, mem);
+      LangchainChatService.instances.set(normalizedUid, mem);
     }
     return mem;
   }
 
   async getPreviousMessages(userUid: string) {
-    const memory = this.getMemoryFor(userUid);
+    // Normalize userUid to ensure consistent string matching
+    const normalizedUid = String(userUid).trim();
+    
+    const memory = this.getMemoryFor(normalizedUid);
     const vars = await memory.loadMemoryVariables({});
     const history = (vars["history"] as (AIMessage | HumanMessage)[]) || [];
     return history;

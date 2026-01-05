@@ -14,11 +14,13 @@ CRITICAL TOOL SELECTION RULES:
    - Difficulty levels: "easy", "beginner", "new to cooking", "I'm new", "simple", "hard", "advanced", "intermediate"
    - Allergies or exclusions: "no chicken", "allergic to nuts", "without X"
    - Time constraints: "under 30 mins", "quick", "fast", "in 20 minutes"
-   - Specific cuisine: "Italian", "Mexican", "Asian"
+   - Specific cuisine: words that clearly refer to a cuisine (even if slightly misspelled), such as "italian", "italain", "mexican", "mexiacn", "asian", "indian", "thai", etc.
    - Macronutrients: "high protein", "low calories", "low carb"
    - Price: "cheap", "budget", "under $X"
    - Seasonality: "spring", "summer", "autumn", "fall", "winter", "seasonal", "in season"
    - Festivals/Occasions: "christmas", "thanksgiving", "easter", "diwali", "holi", "independence day", "new year", etc. (Norwegian, American, or Indian festivals)
+
+   If a word obviously looks like a cuisine (for example "italain" which clearly means "italian"), you MUST treat it as a cuisine constraint and route to sql_search or hybrid_search (never rag_search).
 
 2. Use rag_search ONLY when:
    - User is purely mood-based with NO constraints

@@ -163,6 +163,26 @@ export class UserController {
     }
   }
 
+  static async getChatHistoryByUserId(req: Request, res: Response) {
+    try {
+      const { userId } = req.params;
+      if (!userId) {
+        return res.status(400).json({
+          message: "Bad request",
+          error: "userId is required",
+        });
+      }
+      const result = await ChatService.getChatHistoryByUserId(userId);
+      return res.status(200).json(result);
+    } catch (error: any) {
+      console.error("[Controller] Error in getChatHistoryByUserId:", error);
+      res.status(500).json({
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   static async getRecipes(req: Request, res: Response) {
     try {
       const { query } = req.body;

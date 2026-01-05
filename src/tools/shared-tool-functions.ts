@@ -609,6 +609,23 @@ export async function executeSQLSearch(
       );
     }
 
+    // ✅ ADD: Filter by cuisine at SQL level ONLY when seasonality is NOT present
+    // When seasonality is present, cuisine remains a soft filter (scoring only)
+    if (cuisine && (!seasonality || seasonality.length === 0)) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1
+          FROM recipe_tags_tag rtt
+          INNER JOIN tag t ON rtt."tagId" = t.id
+          WHERE rtt."recipeId" = r.id
+            AND LOWER(TRIM(t.name)) = LOWER(TRIM($${paramIndex}))
+        )
+      `);
+      queryParams.push(cuisine);
+      paramIndex++;
+      console.log(`[SQLSearch] Added cuisine filter at SQL level for: ${cuisine}`);
+    }
+
     const queryLimit =
       difficulty ||
       cuisine ||
@@ -677,9 +694,10 @@ export async function executeSQLSearch(
       }
     }
 
-    // Batch query to check which recipes have the cuisine tag (if cuisine is specified)
+    // Batch query to check which recipes have the cuisine tag (only needed for scoring when seasonality is present)
+    // When seasonality is NOT present, cuisine is already filtered at SQL level, so we don't need this map
     const cuisineTagMap = new Map<string, boolean>();
-    if (cuisine && recipes.length > 0) {
+    if (cuisine && seasonality && seasonality.length > 0 && recipes.length > 0) {
       const recipeIdsForCuisineCheck = recipes.map((r: any) => r.id);
       try {
         const cuisineTagResults = await AppDataSource.query(
@@ -799,6 +817,10 @@ export async function executeSQLSearch(
       );
     }
 
+    // Note: Cuisine is now filtered at SQL level when seasonality is NOT present
+    // So we don't need to filter again here. The cuisineTagMap is only used for scoring
+    // when seasonality IS present (soft filter case).
+
     // Calculate constraint scores and macro scores for all recipes
     // Note: Seasonality is already filtered at SQL level, so we don't need to check it here
     filteredRecipes = filteredRecipes.map((r: any) => {
@@ -818,7 +840,8 @@ export async function executeSQLSearch(
       }
 
       // Check cuisine match using tag map
-      if (cuisine) {
+      // Only use as scoring if seasonality is present (otherwise it's already hard-filtered above)
+      if (cuisine && seasonality && seasonality.length > 0) {
         totalConstraints++;
         if (cuisineTagMap.get(r.id)) {
           constraintScore += 1;
@@ -1209,7 +1232,27 @@ export async function executeHybridSearch(
     };
 
     let filteredOutCount = 0;
-    let recipesWithSimilarity: RecipeWithSimilarity[] = recipeIds
+    
+    // Hard filter by cuisine ONLY when seasonality is NOT present
+    // If seasonality is present, cuisine remains a soft filter (scoring only)
+    let preFilteredRecipeIds = recipeIds;
+    if (cuisine && (!seasonality || seasonality.length === 0)) {
+      const cuisineFilteredIds = recipeIds.filter((id: string) =>
+        cuisineTagMap.get(id)
+      );
+      if (cuisineFilteredIds.length > 0) {
+        preFilteredRecipeIds = cuisineFilteredIds;
+        console.log(
+          `[HybridSearch] After cuisine filter: ${preFilteredRecipeIds.length} recipes`
+        );
+      } else {
+        console.log(
+          `[HybridSearch] No recipes found with cuisine tag "${cuisine}", keeping all recipes`
+        );
+      }
+    }
+    
+    let recipesWithSimilarity: RecipeWithSimilarity[] = preFilteredRecipeIds
       .map((id: string): RecipeWithSimilarity | null => {
         const recipe = recipeMap.get(id);
         const milvusResult = milvusMap.get(id);
@@ -1262,7 +1305,8 @@ export async function executeHybridSearch(
         }
 
         // Check cuisine match using tag map
-        if (cuisine) {
+        // Only use as scoring if seasonality is present (otherwise it's already hard-filtered above)
+        if (cuisine && seasonality && seasonality.length > 0) {
           totalConstraints++;
           if (cuisineTagMap.get(recipe.id)) {
             constraintScore += 1;

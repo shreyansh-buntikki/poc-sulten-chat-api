@@ -300,8 +300,8 @@ If no recipe names found, return: []`;
         AND r."deletedAt" IS NULL
         AND (
           ${recipeNames
-            .map((_, i) => `LOWER(TRIM(r.name)) = LOWER(TRIM($${i + 1}))`)
-            .join(" OR ")}
+        .map((_, i) => `LOWER(TRIM(r.name)) = LOWER(TRIM($${i + 1}))`)
+        .join(" OR ")}
         )
       `,
       recipeNames
@@ -507,7 +507,7 @@ If no recipe names found, return: []`;
           // Use LLM with exact recipe data - it will understand "the first one" from context
           recipesForContext = dbRecipes;
           context = OllamaRAGService.buildRecipeContext(dbRecipes);
-          
+
           result = {
             recipes: dbRecipes,
             noResults: false,

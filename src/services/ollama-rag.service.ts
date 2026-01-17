@@ -51,7 +51,7 @@ export class OllamaRAGService {
     limitedRecipes.forEach((r: any, idx: number) => {
       const total = (r.prepTime || 0) + (r.cookTime || 0);
       const recipeUrl = `https://sulten.app/en/recipes/${r.slug || "no-slug"}`;
-      
+
       context += `${idx + 1}. **${r.recipe_name}**\n`;
       context += `   URL: ${recipeUrl}\n`;
       if (r.ingress) {
@@ -219,19 +219,16 @@ export class OllamaRAGService {
           r.recipe_type === "owned"
             ? "(Your Recipe)"
             : r.recipe_type === "liked"
-            ? "(Liked)"
-            : "";
-        const recipeUrl = `https://sulten.app/en/recipes/${
-          r.slug || "no-slug"
-        }`;
-        context += `${idx + 1}. Recipe Name: "${
-          r.recipe_name
-        }" ${typeLabel} (${similarityPercent}% match)\n`;
+              ? "(Liked)"
+              : "";
+        const recipeUrl = `https://sulten.app/en/recipes/${r.slug || "no-slug"
+          }`;
+        context += `${idx + 1}. Recipe Name: "${r.recipe_name
+          }" ${typeLabel} (${similarityPercent}% match)\n`;
         context += `   URL: ${recipeUrl}\n`;
         context += `   ${r.ingress || "No description"}\n`;
-        context += `   ${r.difficulty} difficulty | ${
-          total ? total + " min" : "Time N/A"
-        }\n`;
+        context += `   ${r.difficulty} difficulty | ${total ? total + " min" : "Time N/A"
+          }\n`;
 
         const ingredients = Array.isArray(r.ingredients) ? r.ingredients : [];
         if (ingredients.length > 0) {
